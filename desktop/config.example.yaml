@@ -1,0 +1,286 @@
+# Copy to config.yaml and configure this machine before setup.
+name: Alex
+spoken_name: A lếch
+wake:
+  required: false
+  aliases:
+  - a lếch
+  - a lệch
+  - a lêch
+  - a lech
+  - a léch
+  - a léc
+  - a lếk
+  - a lex
+  - alex
+  - a lét
+  followup_seconds: 12
+llm:
+  base_url: http://127.0.0.1:1234
+  model: qwen/qwen3.5-4b@q4_k_m
+  temperature: 0.5
+  max_output_tokens: 500
+  history_turns: 10
+stt:
+  model_path: models/whisper-medium
+  model_size: medium
+  device: cuda
+  compute_type: int8_float16
+  cpu_threads: 4
+  beam_size: 5
+  temperature: 0.0
+  silence_floor: 0.0015
+  max_chars_per_second: 45
+  initial_prompt: Tiếng Việt. Trợ lý Alex. Mở ứng dụng, mở thư mục, mở trang web,
+    tìm kiếm.
+  model_repo: Systran/faster-whisper-medium
+  model_revision: 08e178d48790749d25932bbc082711ddcfdfbc4f
+  hotwords: Zalo, Spotify, YouTube, TikTok, Google, Antigravity, Chrome, Python, Notion,
+    Claude, AutoCAD 2023, TLauncher, Minecraft, Messenger, Portal UT, portal.ut.edu.vn,
+    Alex.
+tts:
+  engine: vieneu_turbo
+  turbo_voice: Thái Sơn
+  voice: ../mcp/local-tools/models/vi_VN-vais1000-medium.onnx
+  speed: 1.05
+audio:
+  input_device: null
+  output_device: null
+  sample_rate: 16000
+  vad_aggressiveness: 2
+  silence_ms: 900
+  min_speech_ms: 240
+  max_utterance_seconds: 20
+  echo_cooldown_seconds: 0.9
+  min_rms: 0.0025
+computer:
+  enabled: true
+  command: windows-mcp
+  max_steps: 40
+  timeout_seconds: 45
+power:
+  enabled: true
+  sleep_phrases:
+  - tắt máy
+  - tắc mái
+  - tạch mái
+  - tắt mái
+  - tắt máy tính
+  - cho máy ngủ
+  - cho máy tính ngủ
+  - đưa máy vào chế độ ngủ
+  shutdown_phrases:
+  - tắt nguồn
+  - tắt nguồn máy tính
+  - shutdown máy
+pet:
+  shape: robot-heads
+  size: 110
+  start_hidden: true
+  fps: 30
+  x: 100
+  y: 100
+  follow_cursor: true
+  robot_renderer: live
+privacy:
+  save_audio: false
+  save_transcripts: false
+mobile:
+  enabled: true
+  port: 8768
+  bind_host: auto
+  allowed_client_ip: null
+bionic:
+  bridge_port: 9223
+  timeout_seconds: 900
+  require_local_model: true
+  auto_rotate_after_tokens: 14500
+  auto_rotate_project_ids: []
+  cloud_project_ids: []
+apps:
+  enabled: true
+  entries:
+  - name: Spotify
+    aliases:
+    - sờ pót ti phai
+    - spot ti phai
+    - suppotify
+    - sports ty phai
+    - hớt sports ty phai
+    app_id: SpotifyAB.SpotifyMusic_zpdnekdrzrea0!Spotify
+    processes:
+    - spotify.exe
+  - name: Chrome
+    aliases:
+    - Google Chrome
+    - cờ rôm
+    app_id: Chrome
+    processes:
+    - chrome.exe
+  - name: Edge
+    aliases:
+    - Microsoft Edge
+    app_id: MSEdge
+    processes:
+    - msedge.exe
+  - name: Notepad
+    aliases:
+    - ghi chú
+    - sổ tay
+    app_id: Microsoft.WindowsNotepad_8wekyb3d8bbwe!App
+    processes:
+    - notepad.exe
+  - name: Calculator
+    aliases:
+    - máy tính
+    - máy tính bỏ túi
+    app_id: Microsoft.WindowsCalculator_8wekyb3d8bbwe!App
+    processes:
+    - calculatorapp.exe
+    - calculator.exe
+  - name: File Explorer
+    aliases:
+    - explorer
+    - trình quản lý tệp
+    app_id: Microsoft.Windows.Explorer
+    processes:
+    - explorer.exe
+    window_classes:
+    - CabinetWClass
+  - name: Visual Studio Code
+    aliases:
+    - VS Code
+    - vê ét code
+    app_id: Microsoft.VisualStudioCode
+    processes:
+    - code.exe
+  - name: Antigravity
+    aliases:
+    - anti gravity
+    app_id: electron.app.Antigravity
+    processes:
+    - antigravity.exe
+  - name: Antigravity IDE
+    aliases:
+    - anti gravity IDE
+    app_id: Google.AntigravityIDE
+    processes:
+    - antigravity ide.exe
+  - name: Zalo
+    aliases:
+    - ra lô
+    - gia lô
+    - za lô
+    app_id: com.vng.zalo
+    processes:
+    - zalo.exe
+  - name: Notion
+    aliases:
+    - nốt sẵn
+    - nốt sần
+    shortcut_name: Notion
+    title_contains: Notion
+  - name: Claude
+    aliases:
+    - Claude Desktop
+    - clau de
+    - closet
+    app_id: Claude_pzs8sxrjxfjjc!Claude
+    processes:
+    - claude.exe
+  - name: AutoCAD
+    aliases:
+    - auto cad
+    - auto card
+    - AutoCAD 2023
+    - ad tụi cạch
+    - Azuka hay 023
+    executable_path: C:/Program Files/Autodesk/AutoCAD 2023/acad.exe
+    arguments:
+    - /product
+    - ACAD
+    - /language
+    - en-US
+    title_contains: AutoCAD
+    launch_timeout_seconds: 45
+    processes:
+    - acad.exe
+  - name: Word
+    aliases:
+    - microsoft word
+    - uốt
+    - soạn thảo
+    app_id: Microsoft.Office.WINWORD.EXE.15
+    processes:
+    - winword.exe
+  - name: Excel
+    aliases:
+    - microsoft excel
+    - ếch seo
+    - bảng tính
+    app_id: Microsoft.Office.EXCEL.EXE.15
+    processes:
+    - excel.exe
+  - name: PowerPoint
+    aliases:
+    - microsoft powerpoint
+    - bao o point
+    - trình chiếu
+    app_id: Microsoft.Office.POWERPNT.EXE.15
+    processes:
+    - powerpnt.exe
+  - name: Paint
+    aliases:
+    - vẽ
+    - vẽ tranh
+    - paint
+    - paint 3d
+    app_id: Microsoft.Paint_8wekyb3d8bbwe!App
+    processes:
+    - mspaint.exe
+  - name: Settings
+    aliases:
+    - cài đặt
+    - thiết lập
+    - cài đặt hệ thống
+    app_id: windows.immersivecontrolpanel_cw5n1h2txyewy!microsoft.windows.immersivecontrolpanel
+    processes:
+    - systemsettings.exe
+  - name: Terminal
+    aliases:
+    - windows terminal
+    - cmd
+    - command prompt
+    app_id: Microsoft.WindowsTerminal_8wekyb3d8bbwe!App
+    processes:
+    - windowsterminal.exe
+files:
+  enabled: true
+  search_roots: []
+  search_seconds: 3
+actions:
+  enabled: true
+  timeout_seconds: 35
+learning:
+  enabled: true
+  path: data/learned_commands.sqlite
+  max_phrases: 200
+web:
+  policy: explicit_request_only
+  sites:
+  - name: Messenger
+    url: https://www.messenger.com/
+    aliases:
+    - messenger
+    - mesenger
+    - messen ger
+    - messenger web
+  - name: Portal UT
+    url: https://portal.ut.edu.vn/
+    aliases:
+    - portal
+    - trang portal
+    - portal ut
+    - học tập
+    - trang học tập
+    - tìm kiếm học tập

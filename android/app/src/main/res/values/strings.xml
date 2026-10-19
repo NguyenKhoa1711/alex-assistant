@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">Alex</string>
+    <string name="alert_accessibility_description">Chỉ thao tác trong Zalo khi bạn nhấn giữ nút cảnh báo hoặc chọn thử. Alex tìm đúng hai người đã thiết lập, chia sẻ hành trình 8 giờ và gửi nội dung đã chọn. Không đọc nền, không lưu nội dung trò chuyện, không gửi dữ liệu lên máy chủ Alex. Bạn có thể dừng trong thông báo hoặc tắt quyền này bất kỳ lúc nào.</string>
+</resources>
