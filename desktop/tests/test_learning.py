@@ -26,7 +26,7 @@ class LearningTests(unittest.TestCase):
     def engine(self):
         engine = Controller(self.cfg)
         engine.request_plan = MagicMock(return_value=True)
-        engine.chat = MagicMock(); engine.speaker = MagicMock(); engine.app_actions = MagicMock()
+        engine.chat = engine.gemini_chat = MagicMock(); engine.speaker = MagicMock(); engine.app_actions = MagicMock()
         def stream(question, cancelled):
             if engine.chat.on_submitted:
                 engine.chat.on_submitted()
@@ -103,7 +103,7 @@ class LearningTests(unittest.TestCase):
         self.answer(fresh, 'nhạc làm việc')
         self.assertEqual(fresh.app_actions.execute.call_args.args[0], Action('Spotify', 'play'))
         self.assertEqual(self.store.rows()[0]['successes'], 1)
-        self.assertIn('nhạc làm việc', fresh.chat.stream.call_args.args[0])
+        fresh.chat.stream.assert_not_called()
 
     def test_busy_chat_does_not_write_lesson(self):
         engine = self.engine(); engine.chat.check_ready.side_effect = RuntimeError('busy')
@@ -146,7 +146,7 @@ class LearningTests(unittest.TestCase):
         self.assertEqual(self.store.lookup('bảng chi phí'), Action('Desktop', 'task', 'mở Excel và tạo bảng chi phí'))
         self.answer(engine, 'bảng chi phí')
         engine.app_actions.execute.assert_not_called()
-        self.assertIn('Plan', engine.chat.stream.call_args.args[0])
+        self.assertIn('lập kế hoạch', engine.chat.stream.call_args.args[0])
 
     def test_generic_workflow_uses_computer_switch_independently(self):
         self.store.put('bảng chi phí', Action('Desktop', 'task', 'mở Excel và tạo bảng chi phí'))
@@ -154,7 +154,7 @@ class LearningTests(unittest.TestCase):
         engine.cfg['apps']['enabled'] = False
         engine.cfg['actions']['enabled'] = False
         self.answer(engine, 'bảng chi phí')
-        self.assertIn('Plan', engine.chat.stream.call_args.args[0])
+        self.assertIn('lập kế hoạch', engine.chat.stream.call_args.args[0])
         engine.computer_enabled = False
         self.answer(engine, 'bảng chi phí')
         self.assertIn('Thao tác này đang tắt', engine.chat.stream.call_args.args[0])

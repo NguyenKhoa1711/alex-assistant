@@ -16,18 +16,23 @@ wake:
   - a lét
   followup_seconds: 12
 llm:
-  base_url: http://127.0.0.1:1234
-  model: qwen/qwen3.5-4b@q4_k_m
+  provider: gemma
+  base_url: http://127.0.0.1:18440
+  model: alex-gemma
+  # Set an absolute path to the locally installed Gemma GGUF model.
+  gemma_model_path: ''
+  gemma_gpu_layers: 42
+  gemma_gpu_fallback_layers: 32
   temperature: 0.5
   max_output_tokens: 500
-  history_turns: 10
+  history_turns: 6
 stt:
   model_path: models/whisper-medium
   model_size: medium
   device: cuda
   compute_type: int8_float16
   cpu_threads: 4
-  beam_size: 5
+  beam_size: 3
   temperature: 0.0
   silence_floor: 0.0015
   max_chars_per_second: 45
@@ -48,7 +53,7 @@ audio:
   output_device: null
   sample_rate: 16000
   vad_aggressiveness: 2
-  silence_ms: 900
+  silence_ms: 1500
   min_speech_ms: 240
   max_utterance_seconds: 20
   echo_cooldown_seconds: 0.9

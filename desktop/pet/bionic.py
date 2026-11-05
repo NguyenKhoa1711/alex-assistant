@@ -15,7 +15,7 @@ import httpx
 import websocket
 
 
-EDITOR = '[data-bionic-rich-text-input="true"][aria-label="Bionic chat input"]'
+EDITOR = '[data-bionic-rich-text-input="true"]'
 def active_elements(selector: str) -> str:
     """Find controls in the selected Bionic tab, excluding mounted hidden tabs."""
     return (f'[...document.querySelectorAll({json.dumps(selector)})]'
@@ -203,11 +203,19 @@ def model_permitted(spec: dict, project_id: str, cfg: dict) -> bool:
         return True
     if spec.get('type') == 'cloudInference':
         return project_id in cfg.get('cloud_project_ids', []) and bool(spec.get('model'))
-    prefixes = cfg.get('local_model_prefixes', ['qwen/qwen3.5-4b@'])
-    identifier = spec.get('indexedModelIdentifier', '')
-    return spec.get('type') == 'indexed' and any(
-        identifier == prefix.rstrip('@') or identifier.startswith(prefix)
-        for prefix in prefixes)
+    prefixes = cfg.get('local_model_prefixes', [
+        'qwen/qwen3.5-4b@',
+        'qwen3.5-4b',
+        'lmstudio-community/Qwen3.5-4B',
+    ])
+    identifier = str(spec.get('indexedModelIdentifier', ''))
+    low = identifier.casefold()
+    return spec.get('type') == 'indexed' and (
+        any(low == prefix.rstrip('@').casefold() or low.startswith(prefix.casefold())
+            for prefix in prefixes)
+        or 'qwen3.5-4b' in low
+        or 'qwen3-4b' in low
+    )
 
 
 class BionicChat:
@@ -336,8 +344,8 @@ class BionicChat:
                     raise RuntimeError('Tab Bionic vừa đổi; chưa gửi câu hỏi.')
                 renderer.call('Input.insertText', {'text': question})
                 # React updates the send button after the input event.
-                for _ in range(20):
-                    if cancelled.wait(.05):
+                for _ in range(30):
+                    if cancelled.wait(.02):
                         return
                     if renderer.evaluate(LOGIN_CHECK):
                         raise RuntimeError(LOGIN_ERROR + ' Câu hỏi còn ở ô nhập.')
@@ -372,7 +380,7 @@ class BionicChat:
                 else:
                     raise RuntimeError('Bionic chưa tạo chat mới sau khi gửi; pet không gửi lại câu hỏi.')
             reported_submission = False
-            while not cancelled.wait(.2):
+            while not cancelled.wait(.07):
                 _, entries = read_entries(database, session, head)
                 error = turn_error(entries, question)
                 if error:

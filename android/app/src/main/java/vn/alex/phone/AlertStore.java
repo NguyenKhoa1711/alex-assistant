@@ -16,7 +16,7 @@ import javax.crypto.spec.GCMParameterSpec;
 /** Local settings and a synchronous, at-most-once dispatch journal. No PIN or location history. */
 final class AlertStore {
     private final SharedPreferences prefs;
-    static final String[] NAMES = {"Người thân 1", "Người thân 2"};
+    static final String[] NAMES = {"Đại ca", "Chanhthuanhk"};
     AlertStore(Context context) { this(context, "alex_alerts"); }
     AlertStore(Context context, String namespace) { prefs = context.getSharedPreferences(namespace, Context.MODE_PRIVATE); }
     String name(int person) { return prefs.getString("name" + person, NAMES[person]); }

@@ -15,6 +15,7 @@ import unicodedata
 import urllib.parse
 import webbrowser
 import winreg
+from .web_search import parse_web_search
 
 
 def normalized(text: str) -> str:
@@ -42,18 +43,22 @@ def incomplete_open_kind(question: str) -> str | None:
 
 def launch_name(question: str) -> str | None:
     """Extract one explicit app-opening request from natural Vietnamese speech."""
-    text = normalized(question).strip(' .!?')
+    text = normalized(question).strip(' ,.!?')
     if not text or len(text) > 180 or any(char in text for char in '\r\n'):
         return None
-    prefixes = ('hay giup toi ', 'hay giup minh ', 'ban co the ', 'co the ',
-                'toi muon ban ', 'minh muon ban ', 'toi muon ', 'minh muon ',
-                'vui long ', 'lam on ', 'hay ', 'ban ', 'cho toi ', 'cho minh ',
-                'giup toi ', 'giup minh ')
-    for _ in range(3):
-        prefix = next((value for value in prefixes if text.startswith(value)), None)
+    prefixes = ('alex oi', 'alex', 'a lech oi', 'a lech', 'ban oi',
+                'vang', 'da', 'u', 'uh', 'a', 'o', 'oi', 'nay', 'e', 'oke', 'ok', 'duoc roi',
+                'hay giup toi', 'hay giup minh', 'ban co the', 'co the',
+                'toi muon ban', 'minh muon ban', 'toi muon', 'minh muon',
+                'vui long', 'lam on', 'hay', 'ban', 'cho toi', 'cho minh',
+                'giup toi', 'giup minh')
+    for _ in range(5):
+        text = text.lstrip(' ,;:-')
+        prefix = next((value for value in prefixes
+                       if re.match(r'^' + re.escape(value) + r'(?:[\s,;:-]+|$)', text)), None)
         if prefix is None:
             break
-        text = text[len(prefix):]
+        text = text[len(prefix):].lstrip(' ,;:-')
     text = re.sub(r' cao cho (toi|minh)$', r' cho \1', text)
     match = re.fullmatch(r'(?:mo|maa|mat|bat|chay|khoi dong|vao|vo|truy cap) (.+)', text)
     if match is None:
@@ -67,7 +72,10 @@ def launch_name(question: str) -> str | None:
         if name == old:
             break
     name = re.sub(r'^(?:phan mem|ung dung|app|game|chuong trinh) ', '', name).strip()
-    if not name or re.search(r'\b(?:roi|sau do|va|xoa|gui|tat|dung lai)\b|[\\/:;*?"<>|]', name):
+    if (not name or
+            re.match(r'^(?:nhac|bai(?:\s+hat|\s+nhac)?|ca\s+khuc|ban\s+nhac|video|mv|clip|tin\s+nhan|cuoc\s+tro\s+chuyen)\b', name) or
+            re.search(r'\b(?:tren|trong|o)\s+(?:youtube|you\s+tube|du\s+tup|iu\s+tup|diu\s+tup|spotify|suppotify|soptily|zalo|ra\s+lo|gia\s+lo|za\s+lo)\b', name) or
+            re.search(r'\b(?:roi|sau do|va|xoa|gui|tat|dung lai)\b|[\\/:;*?"<>|]', name)):
         return None
     return name
 
@@ -372,7 +380,7 @@ def suggest_installed_app(question: str, configured: list[dict],
     second_score = ranked[1][0] if len(ranked) > 1 else 0.0
     if diagnostics is not None:
         diagnostics.update(score=round(top_score, 4), runner_up=round(second_score, 4))
-    if top_score < 0.72 or top_score - second_score < 0.10:
+    if top_score < 0.68 or top_score - second_score < 0.10:
         return None
     return AppSuggestion(top_entry, top_score,
                          automatic=top_score >= 0.91 and top_score - second_score >= 0.18)
@@ -408,6 +416,25 @@ def _safe_shortcut_target(path: Path) -> tuple[str, bool] | None:
 
 KNOWN_WEBSITES: dict[str, tuple[str, str]] = {
     'youtube': ('https://www.youtube.com', 'YouTube'),
+    'you tube': ('https://www.youtube.com', 'YouTube'),
+    'youtu': ('https://www.youtube.com', 'YouTube'),
+    'utube': ('https://www.youtube.com', 'YouTube'),
+    'yutube': ('https://www.youtube.com', 'YouTube'),
+    'youtube google': ('https://www.youtube.com', 'YouTube'),
+    'du tup': ('https://www.youtube.com', 'YouTube'),
+    'diu tup': ('https://www.youtube.com', 'YouTube'),
+    'iu tup': ('https://www.youtube.com', 'YouTube'),
+    'yu tup': ('https://www.youtube.com', 'YouTube'),
+    'giu tup': ('https://www.youtube.com', 'YouTube'),
+    'du tu': ('https://www.youtube.com', 'YouTube'),
+    'diu tu': ('https://www.youtube.com', 'YouTube'),
+    'iu tu': ('https://www.youtube.com', 'YouTube'),
+    'dung tap': ('https://www.youtube.com', 'YouTube'),
+    'ung dung tap': ('https://www.youtube.com', 'YouTube'),
+    'dung tuc': ('https://www.youtube.com', 'YouTube'),
+    'ung dung tuc': ('https://www.youtube.com', 'YouTube'),
+    'du tap': ('https://www.youtube.com', 'YouTube'),
+    'du tuc': ('https://www.youtube.com', 'YouTube'),
     'facebook': ('https://www.facebook.com', 'Facebook'),
     'fb': ('https://www.facebook.com', 'Facebook'),
     'google': ('https://www.google.com', 'Google'),
@@ -431,17 +458,72 @@ KNOWN_WEBSITES: dict[str, tuple[str, str]] = {
 }
 
 
-def requested_web(question: str, sites: list[dict] | None = None) -> tuple[str, str] | None:
-    text = normalized(question).strip(' .!?')
-    text = re.sub(r'^(?:hay |ban |hay giup (?:toi|minh) )', '', text)
+_COMPOUND_TAIL_VERBS = re.compile(
+    r'\b(?:luot|luoc|nuot|look|loop|loot|load|cuon|keo|dong|tat|thoat|close|'
+    r'dung|tam dung|ngung|phong to|thu nho|khoi phuc|tang|giam|chinh|'
+    r'chuyen|doi|qua|quay lai|lui|mo|bat|chay|khoi dong|vao|truy cap|tim|kiem|tra cuu)\b'
+)
 
-    search_match = re.fullmatch(r'(?:tim kiem|tra cuu|tim) (.+?)(?: tren (?:mang|web|internet|google))?', text)
-    if search_match:
-        query = search_match.group(1).strip()
-        if query:
-            encoded = urllib.parse.quote_plus(query)
-            return f'https://www.google.com/search?q={encoded}', 'Tìm kiếm web'
 
+def _match_known_website(target: str, sites: list[dict] | None = None, *, exact: bool = False) -> tuple[str, str] | None:
+    candidates = [target]
+    spaced = re.sub(r'[._-]+', ' ', target).strip()
+    if spaced and spaced not in candidates:
+        candidates.append(spaced)
+    for candidate in candidates:
+        for site in sites or []:
+            if candidate in {normalized(alias) for alias in [site['name'], *site.get('aliases', [])]}:
+                return site['url'], site['name']
+        for site_key, site_val in KNOWN_WEBSITES.items():
+            if candidate == site_key:
+                return site_val
+            if not exact and candidate.startswith(site_key + ' '):
+                tail = candidate[len(site_key) + 1:].strip()
+                if ',' not in tail and not _COMPOUND_TAIL_VERBS.search(tail):
+                    return site_val
+    return None
+
+
+def requested_web(question: str, sites: list[dict] | None = None, last_app: str = '') -> tuple[str, str] | None:
+    from .app_actions import parse_action
+    search = parse_web_search(question)
+    if search and search.query and (search.explicit_web or parse_action(question, last_app) is None):
+        # "Mở YouTube trên Google" opens the known site. "Tìm YouTube trên
+        # Google" searches it, as do unknown names with an explicit web target.
+        if search.open_site:
+            target = normalized(search.query)
+            stripped = re.sub(r'^(?:trang web|website|web|trang|ung dung|phan mem|app|kenh) ', '', target).strip()
+            known = (_match_known_website(target, sites, exact=True) or
+                     _match_known_website(stripped, sites, exact=True))
+            if known:
+                return known
+            candidate = re.sub(r'(?i)^(?:trang web|website|web|trang) ', '', search.query).strip()
+            parsed = urllib.parse.urlparse(candidate)
+            if (parsed.scheme in ('http', 'https') and parsed.hostname
+                    and not parsed.username and not parsed.password and not re.search(r'\s', candidate)):
+                return candidate, parsed.hostname
+            if re.fullmatch(r'[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)*\.(?:com\.vn|edu\.vn|gov\.vn|com|vn|net|org|edu|io|gov)', candidate):
+                return 'https://' + candidate, candidate
+        return 'https://www.google.com/search?' + urllib.parse.urlencode({'q': search.query}), 'Tìm kiếm web'
+    text = normalized(question).strip(' ,.!?')
+    if re.search(r'\b(?:dung|khong|khoan) (?:mo|bat|vao|vo|chay|khoi dong|truy cap)\b', text):
+        return None
+    prefixes = ('alex oi', 'alex', 'a lech oi', 'a lech', 'ban oi',
+                'vang', 'da', 'u', 'uh', 'a', 'o', 'oi', 'nay', 'e', 'oke', 'ok', 'duoc roi',
+                'hay giup toi', 'hay giup minh', 'ban co the', 'co the',
+                'toi muon ban', 'minh muon ban', 'toi muon', 'minh muon',
+                'vui long', 'lam on', 'hay', 'ban', 'cho toi', 'cho minh',
+                'giup toi', 'giup minh')
+    for _ in range(5):
+        text = text.lstrip(' ,;:-')
+        prefix = next((value for value in prefixes
+                       if re.match(r'^' + re.escape(value) + r'(?:[\s,;:-]+|$)', text)), None)
+        if prefix is None:
+            break
+        text = text[len(prefix):].lstrip(' ,;:-')
+
+    if parse_action(question, last_app) is not None:
+        return None
     # Keep this narrow: noisy TikTok dictation must still contain an opening verb.
     if re.fullmatch(r'(?:(?:m|minh|ban|hay) ){0,3}(?:mo|m bo|manh ham) '
                     r'(?:trang web |web )?'
@@ -450,30 +532,45 @@ def requested_web(question: str, sites: list[dict] | None = None) -> tuple[str, 
                     r'(?: (?:cho|giup) (?:toi|minh))?', text):
         return KNOWN_WEBSITES['tiktok']
 
-    match = re.fullmatch(r'(?:mo|bat|vao|chay|truy cap) (.+)', text)
+    match = re.fullmatch(
+        r'(?:mo|maa|mat|moi|boi|bat(?: bo)?|vao|vo|chay|khoi dong|truy cap) (.+)',
+        text,
+    )
+    if not match:
+        match = re.fullmatch(
+            r'bo (.+? (?:(?:cho|giup) (?:toi|minh)|(?:o )?(?:tren|trong|o) (?:web|trinh duyet|google|chrome)))',
+            text,
+        )
     if not match:
         return None
     target = match.group(1).strip()
-    target = re.sub(r'^(?:cho|giup) (?:toi|minh) ', '', target)
-    target = re.sub(r'(?: (?:giup|cho) (?:toi|minh))?(?: (?:di|nhe|len|voi))?$', '', target).strip()
-    target = re.sub(r' (?:tren|trong|o) (?:web|trinh duyet|google)$', '', target).strip()
-    if re.search(r'\b(?:roi|sau do|va gui|va xoa|va cai dat)\b', target):
+    target = re.sub(r'^(?:(?:cho|giup) (?:toi|minh) )', '', target).strip()
+    for _ in range(3):
+        old = target
+        target = re.sub(r' (?:giup|cho) (?:toi|minh)$', '', target).strip()
+        target = re.sub(r' (?:di|nhe|len|voi|ngay|luon|duoc khong)$', '', target).strip()
+        target = re.sub(
+            r' (?:o )?(?:tren|trong|o|qua|bang) (?:trang web|website|web|trinh duyet|google|chrome|google chrome|edge|internet)$',
+            '',
+            target,
+        ).strip()
+        if target == old:
+            break
+    if re.search(r'\b(?:roi|sau do|xong|va|voi)\b', target):
         return None
 
-    is_explicit_web = False
-    for prefix in ('trang web ', 'website ', 'web ', 'trang '):
+    direct_hit = _match_known_website(target, sites)
+    if direct_hit is not None:
+        return direct_hit
+
+    for prefix in ('trang web ', 'website ', 'web ', 'trang ', 'ung dung ', 'phan mem ', 'app ', 'kenh '):
         if target.startswith(prefix):
             target = target[len(prefix):].strip()
-            is_explicit_web = True
             break
 
-    for site in sites or []:
-        if target in {normalized(alias) for alias in [site['name'], *site.get('aliases', [])]}:
-            return site['url'], site['name']
-
-    for site_key, site_val in KNOWN_WEBSITES.items():
-        if target == site_key or target.startswith(site_key + ' '):
-            return site_val
+    stripped_hit = _match_known_website(target, sites)
+    if stripped_hit is not None:
+        return stripped_hit
 
     url_match = re.search(r'(https?://\S+)', question)
     if url_match:
@@ -508,6 +605,9 @@ class LaunchResult:
                     if self.verified else
                     'Mình chưa bấm được nút vào game trong TLauncher.')
         if self.kind == 'web':
+            if self.name == 'Tìm kiếm web':
+                return ('Mình đã gửi yêu cầu tìm kiếm Google tới trình duyệt.' if self.verified
+                        else 'Mình chưa mở được trang tìm kiếm Google trong trình duyệt.')
             return (f'Mình đã gửi địa chỉ {self.name} tới trình duyệt.' if self.verified
                     else f'Mình chưa gửi được địa chỉ {self.name} tới trình duyệt.')
         if not self.verified:

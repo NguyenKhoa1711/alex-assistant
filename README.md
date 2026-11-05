@@ -1,40 +1,41 @@
 # Alex Assistant
 
-Mã nguồn riêng tư của Alex: pet Windows, ứng dụng Android và lớp công cụ kết nối Bionic.
-Ảnh chụp mã nguồn ngày 19/10/2026; Android hiện là 1.7 (versionCode 19).
+Mã nguồn trợ lý Alex trên Windows và Android. Alex sử dụng Gemma chạy cục bộ để trò chuyện; phần tra cứu web được gửi tới dịch vụ tìm kiếm khi cần. Các thành phần Bionic cũ được giữ trong mã nguồn để tham khảo và tương thích.
 
 ## Thành phần
 
-- `desktop/`: pet, thu âm/VAD, STT, giọng nói, điều hướng lệnh cục bộ, kết nối Bionic và điện thoại, kiểm thử.
-- `android/`: chat giọng nói, ghép PC qua QR/TLS, bàn phím Bluetooth HID và cảnh báo theo cấp.
-- `mcp/`: máy chủ giọng Việt tùy chọn và phiên bản phụ thuộc Windows MCP.
-- `docs/Alex-global-compact.md`: chỉ dẫn Alex trong Bionic.
+- `desktop/`: giao diện pet, microphone/VAD/STT, giọng nói, router ứng dụng/tệp/web, thao tác cửa sổ, âm lượng/độ sáng, kết nối điện thoại.
+- `android/`: trò chuyện, ghép QR/TLS, mở khóa qua mạng hoặc Bluetooth và cảnh báo theo cấp.
+- `windows-unlock/`: mã nguồn dịch vụ mở khóa quyền LocalSystem, kiểm chứng giao diện Windows và gửi PIN một lần; có bộ gỡ cài đặt.
+- `windows-display-priority/`: ưu tiên tắt màn hình tạm thời khi Alex khóa máy và phục hồi khi mở khóa.
+- `mcp/`, `docs/`: công cụ cục bộ và tài liệu tích hợp.
+- `tools/`: kiểm thử và kiểm tra phục hồi.
 
-Bionic là ứng dụng cài riêng, không được đóng gói trong repo. Model AI, Python/JDK/SDK và môi trường ảo cũng được cài riêng.
+## Bản nguồn và bản đang chạy
 
-## Chạy trên Windows
+Repo này dùng để phát triển/khôi phục. Pet đang chạy tại `../../outputs/Bionic-pet`; việc sửa repo không tự triển khai vào bản đang chạy.
+Các thay đổi đồng bộ có thể xem bằng `git diff`. Không đưa cấu hình, dữ liệu người dùng hoặc khóa vào commit.
 
-1. Dùng Python 3.11, `uv`, Bionic và model đã thiết lập trên máy. Bionic bridge dùng cổng loopback 9223; dịch vụ model dùng 1234.
-2. Chép `desktop/config.example.yaml` thành `desktop/config.yaml`; chọn CPU/CUDA và microphone phù hợp. Điền các thư mục cho phép tìm, đường dẫn Windows MCP và các project Bionic nếu dùng. Mẫu cấu hình không chứa thư mục cá nhân hoặc ID phiên chat.
-3. Chạy `desktop/setup.bat` để cài các phụ thuộc và tải model STT đã ghim phiên bản. Cài giọng nói tương ứng; model Piper nếu dùng phải được đặt tại đường dẫn cấu hình. Việc tải model chỉ diễn ra trong bước thiết lập chủ động.
-4. Chạy `desktop/run.bat`. Ctrl+Space bật/ẩn pet; cấu hình mặc định không lưu bản thu hoặc nội dung câu nói.
+## Kiểm tra
 
-Repo là bản nguồn để phát triển/khôi phục. Bản Alex đang dùng vẫn chạy ở `outputs/Bionic-pet` trong thư mục cài đặt trên ổ D; clone repo không tự thay thế bản đang chạy hoặc dữ liệu của bạn.
+Các bài thử desktop ở `desktop/tests`; các thao tác nguồn điện, mở ứng dụng và nhập phím được giả lập. Bộ thử Android thuần Java kiểm tra giữ để nói, thu âm, cảnh báo, xác nhận, hủy, hết hạn, TLS và nguyên tắc không gửi lại PIN. Xem `docs/AUDIT-20261105.md` để biết kết quả và giới hạn kiểm thử mới nhất.
 
-## Build Android
+`tools/Test-UnlockClient.ps1 -JdkRoot <JDK>` chạy kiểm thử client không cần Android SDK hay điện thoại.
+`windows-unlock/run-windows-lab.ps1` biên dịch và chạy bộ thử C# mà không cài dịch vụ hay gửi phím thật.
 
-Xem [hướng dẫn Android](android/README.md). Khóa ký bản đang cài phải được sao lưu riêng và dùng lại để cập nhật tại chỗ.
+## Android
 
-## Hành vi quan trọng
+Xem `android/README.md`. APK người dùng đã cài và khóa ký được lưu riêng ngoài repo. Bản biên dịch kiểm thử dùng khóa tạm không cài lên điện thoại và không thay thế khóa phát hành.
 
-- “Đóng tab” đóng một tab trình duyệt và giữ cửa sổ ở tab cuối. Lệnh đóng ứng dụng/cửa sổ mới đóng cả cửa sổ.
-- “Tắt máy” là Sleep; “tắt nguồn” là Shutdown. Luồng này thực thi cục bộ theo cấu hình, không dùng model để lặp thao tác.
-- Pet có thể dùng Bionic ở nền. Mở Bionic bằng menu khi cần xem chat.
-- Ghép điện thoại được lưu cục bộ. Giọng nói qua Wi-Fi cần PC hoạt động và tường lửa cho phép kết nối đã giới hạn; mở khóa dùng Bluetooth HID và xác nhận trên điện thoại, không lưu PIN Windows.
-- Cảnh báo Zalo phụ thuộc quyền trợ năng và giao diện Zalo; không gửi thử tới người thật khi chạy kiểm thử.
+## Thiết lập model cục bộ
 
-## Quyền riêng tư và sao lưu
+Sao chép `desktop/config.example.yaml` thành `desktop/config.yaml`, chỉnh `llm.gemma_model_path` thành đường dẫn tuyệt đối tới tệp GGUF Gemma đã cài và điều chỉnh số lớp GPU theo phần cứng. Model, bộ chạy và cấu hình cá nhân không nằm trong Git; xem `desktop/GEMMA-LOCAL.md` để biết thêm chi tiết.
 
-Không commit `config.yaml`, khóa ký APK, chứng chỉ/khóa riêng, thông tin đăng nhập, dữ liệu ghép nối, số điện thoại, lịch sử chat, bản thu, log hay profile trình duyệt. Những dữ liệu này vẫn nằm trên máy và cần bản sao lưu riêng nếu muốn khôi phục trọn vẹn.
+## Hành vi và quyền riêng tư
 
-Xem [kiểm thử](docs/TESTING.md) và [thành phần bên thứ ba](THIRD_PARTY.md).
+- Đóng tab chỉ đóng một tab; đóng cửa sổ/ứng dụng là lệnh riêng.
+- Tắt máy: theo cấu hình nguồn điện hiện tại. Chế độ chờ mở khóa từ xa khi cắm sạc khóa Windows/tắt màn hình và giữ tiến trình hoạt động; không phải Sleep thật qua nút nguồn Windows.
+- Tắt nguồn là Shutdown; lệnh nguồn không tự lặp sau khi mở khóa.
+- PIN chỉ tồn tại tạm thời cho một lần xác nhận trên điện thoại, không được lưu hoặc ghi log.
+- Đợt này không bổ sung đánh thức Sleep thật qua Internet và không gửi thử cảnh báo Zalo/SMS.
+- Không commit model, venv, profile Bionic, log, bản thu, khóa ký, chứng chỉ riêng, thông tin ghép nối hoặc cấu hình cá nhân.

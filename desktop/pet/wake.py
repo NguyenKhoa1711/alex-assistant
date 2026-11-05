@@ -38,6 +38,15 @@ class SentenceBuffer:
         result = []
         while True:
             match = re.search(r'[.!?;](?:\s|$)', self.pending)
+            if not match and len(self.pending) >= 42:
+                match = re.search(r'[,:]\s', self.pending[20:])
+                if match:
+                    end_idx = 20 + match.end()
+                    sentence = self.pending[:end_idx].strip()
+                    self.pending = self.pending[end_idx:]
+                    if sentence:
+                        result.append(sentence)
+                    continue
             if not match:
                 break
             sentence = self.pending[:match.end()].strip()

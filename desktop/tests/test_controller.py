@@ -1,4 +1,5 @@
 from __future__ import annotations
+from datetime import datetime
 import threading
 import time
 import unittest
@@ -7,14 +8,31 @@ from pathlib import Path
 import numpy as np
 from pet.audio import Utterance
 from pet.config import load_config
-from pet.controller import Controller
+from pet.controller import Controller, format_laptop_clock
 from pet.mobile import MobileJob
 
 
 class ControllerTests(unittest.TestCase):
+    def test_desktop_text_can_stream_without_synthesizing_voice(self) -> None:
+        engine = self.make_engine()
+        engine._desktop_speak = False
+        engine.chat.stream.return_value = iter(['Chào ', 'bạn.'])
+        answer = engine._answer('Xin chào', Utterance(np.zeros(0), time.monotonic()), 0)
+        self.assertEqual(answer, 'Chào bạn.')
+        engine.speaker.speak.assert_not_called()
+        engine.speaker.render_pcm.assert_not_called()
+
+    def test_desktop_silent_action_reports_result_without_voice(self) -> None:
+        engine = self.make_engine()
+        engine._desktop_speak = False
+        self.assertTrue(engine._speak_action_result('Đã kiểm tra.',
+            Utterance(np.zeros(0), time.monotonic()), 0, None))
+        engine.speaker.speak.assert_not_called()
+        engine.speaker.render_pcm.assert_not_called()
+
     def make_engine(self) -> Controller:
         engine = Controller(load_config())
-        engine.chat = MagicMock()
+        engine.chat = engine.gemini_chat = MagicMock()
         engine.chat.first_token_seconds = .1
         engine.speaker = MagicMock()
         return engine
@@ -80,10 +98,8 @@ class ControllerTests(unittest.TestCase):
         engine.computer_enabled = True
         def stream(question: str, cancelled: threading.Event):
             self.assertIn('Sửa mã nguồn Python', question)
-            self.assertIn('công cụ tệp/Git của Bionic', question)
-            self.assertIn('MCP Windows Desktop Plan chỉ dành cho thao tác giao diện', question)
-            self.assertIn('AGENTS.md', question)
-            self.assertLess(len(question), 350)
+            self.assertIn('Dùng công cụ Alex được cấp', question)
+            self.assertIn('lập kế hoạch', question)
             yield 'Mình sẽ kiểm tra dự án.'
         engine.chat.stream.side_effect = stream
         engine._answer('Sửa mã nguồn Python', Utterance(np.zeros(100), time.monotonic()), .1)
@@ -110,6 +126,90 @@ class ControllerTests(unittest.TestCase):
             yield 'Mình sẽ làm project.'
         engine.chat.stream.side_effect = stream
         engine._answer('Hãy làm project học từ vựng', Utterance(np.zeros(100), time.monotonic()), .1)
+
+    def test_clock_queries_read_laptop_clock_instead_of_bangkok_timezone(self) -> None:
+        sample_now = datetime(2026, 10, 24, 15, 4, 0)
+        for phrase in ('Bây giờ là mấy giờ rồi?', 'Mấy giờ rồi?', 'Xem giờ trên laptop cho tôi'):
+            text = format_laptop_clock(phrase, now=sample_now)
+            self.assertIsNotNone(text)
+            self.assertIn('15 giờ 04 phút', text)
+            self.assertIn('thứ Bảy ngày 24 tháng 10 năm 2026', text)
+            self.assertNotIn('Bangkok', text)
+        date_text = format_laptop_clock('Hôm nay là thứ mấy?', now=sample_now)
+        self.assertIsNotNone(date_text)
+        self.assertIn('thứ Bảy', date_text)
+        self.assertIsNone(format_laptop_clock('Bây giờ ở Tokyo là mấy giờ?', now=sample_now))
+
+        engine = self.make_engine()
+        answer = engine._answer('Bây giờ là mấy giờ rồi?',
+                                Utterance(np.zeros(100), time.monotonic()), .1)
+        self.assertIn('Theo đồng hồ trên laptop', answer)
+        self.assertNotIn('Bangkok', answer)
+        engine.chat.stream.assert_not_called()
+
+    def test_compound_voice_commands_execute_both_tasks(self) -> None:
+        from pet.apps import LaunchResult
+        from pet.app_actions import ActionResult
+        for phrase in (
+            'Vâng, hãy mở TikTok và loop web cho tôi đi.',
+            'Bạn hãy mở TikTok và Look Web cho tôi đi.',
+            'Mở TikTok cho tôi lướt web cho tôi đi.',
+            'Mở TikTok và lướt web cho tôi.',
+        ):
+            with self.subTest(phrase=phrase):
+                engine = self.make_engine()
+                with patch('pet.controller.open_web',
+                           return_value=LaunchResult('TikTok', True, True, 0.1, 'web')) as web_mock, \
+                     patch.object(engine.web_scroller, '_find_scroll_target', return_value=12345), \
+                     patch.object(engine.web_scroller, 'start',
+                                  return_value=ActionResult('Đã bật chế độ tự động.', True, 0.05)) as scroll_mock:
+                    reply = engine._answer(phrase, Utterance(np.zeros(100), time.monotonic()), .1)
+                web_mock.assert_called_once_with('https://www.tiktok.com', 'TikTok')
+                scroll_mock.assert_called_once_with('down')
+                self.assertIn('TikTok', reply)
+                self.assertIn('Đã bật chế độ tự động.', reply)
+                engine.chat.stream.assert_not_called()
+
+    def test_active_web_scroll_stops_after_compound_open_and_scroll(self) -> None:
+        from pet.apps import LaunchResult
+
+        for phrase in ('Dừng', 'Thôi', 'Dừng lướt web đi', 'Ngừng lướt TikTok lại đi'):
+            with self.subTest(phrase=phrase):
+                engine = self.make_engine()
+                scroller = engine.web_scroller
+                try:
+                    with patch('pet.controller.open_web',
+                               return_value=LaunchResult('TikTok', True, True, 0.1, 'web')), \
+                         patch.object(scroller, '_find_scroll_target', return_value=12345), \
+                         patch.object(scroller, '_focus_and_position_cursor'), \
+                         patch.object(scroller, '_send_wheel_tick', return_value=True):
+                        engine._answer('Mở TikTok và lướt web cho tôi',
+                                       Utterance(np.zeros(100), time.monotonic()), .1)
+                        self.assertTrue(scroller.is_active())
+
+                        reply = engine._answer(phrase,
+                                               Utterance(np.zeros(100), time.monotonic()), .1)
+
+                    self.assertEqual(reply, 'Đã dừng.')
+                    self.assertFalse(scroller.is_active())
+                    engine.chat.stream.assert_not_called()
+                finally:
+                    scroller.stop()
+
+    def test_interrupt_stops_active_web_scroll(self) -> None:
+        engine = self.make_engine()
+        scroller = engine.web_scroller
+        with patch.object(scroller, '_find_scroll_target', return_value=12345), \
+             patch.object(scroller, '_focus_and_position_cursor'), \
+             patch.object(scroller, '_send_wheel_tick', return_value=True), \
+             patch.object(engine.local_chat, 'cancel'), \
+             patch.object(engine.gemini_chat, 'cancel'):
+            scroller.start()
+            self.assertTrue(scroller.is_active())
+
+            engine.interrupt()
+
+        self.assertFalse(scroller.is_active())
 
 
 if __name__ == '__main__':

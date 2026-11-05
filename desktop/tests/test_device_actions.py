@@ -129,7 +129,7 @@ class ExecutionTests(unittest.TestCase):
 class ControllerTests(unittest.TestCase):
     def test_device_command_stays_local_and_private(self):
         cfg=load_config(); cfg['learning']['enabled']=False; cfg['privacy']['save_transcripts']=False
-        engine=Controller(cfg); engine.chat=MagicMock(); engine.speaker=MagicMock(); engine.app_actions=MagicMock()
+        engine=Controller(cfg); engine.chat = engine.gemini_chat = MagicMock(); engine.speaker=MagicMock(); engine.app_actions=MagicMock()
         engine.chat.check_ready.side_effect=RuntimeError('busy')
         engine.app_actions.execute.return_value=ActionResult('Âm lượng đang ở 60 phần trăm.',True)
         with self.assertLogs(level='INFO') as logs:
@@ -140,7 +140,7 @@ class ControllerTests(unittest.TestCase):
 
     def test_disabled_actions_do_not_touch_device(self):
         cfg=load_config();cfg['learning']['enabled']=False;cfg['actions']['enabled']=False
-        engine=Controller(cfg);engine.chat=MagicMock();engine.speaker=MagicMock();engine.app_actions=MagicMock()
+        engine=Controller(cfg);engine.chat = engine.gemini_chat = MagicMock();engine.speaker=MagicMock();engine.app_actions=MagicMock()
         engine._answer('Giảm độ sáng',Utterance(np.zeros(100),time.monotonic()),.1)
         engine.app_actions.execute.assert_not_called();engine.chat.stream.assert_not_called()
 

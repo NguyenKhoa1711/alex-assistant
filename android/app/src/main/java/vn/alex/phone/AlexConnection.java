@@ -85,8 +85,7 @@ final class AlexConnection {
         String fingerprint = link.getQueryParameter("fp");
         String code = link.getQueryParameter("code");
         int port = Integer.parseInt(link.getQueryParameter("port"));
-        if (host == null || !(InetAddress.getByName(host) instanceof Inet4Address)
-                || !InetAddress.getByName(host).isSiteLocalAddress()
+        if (!PrivateAddress.allowed(host)
                 || fingerprint == null || !fingerprint.matches("[0-9a-fA-F]{64}")
                 || code == null || !code.matches("[0-9a-fA-F]{32}")
                 || port < 1024 || port > 65535)
@@ -112,6 +111,8 @@ final class AlexConnection {
             response = post(host(), port, fingerprint, "/turn",
                     "application/octet-stream", pcm16, token);
         } catch (HostUnavailableException unavailable) {
+            if (PrivateAddress.remote(host()))
+                throw new IOException("Không tới được laptop. Kiểm tra mạng riêng Tailscale trên hai máy, laptop phải đang thức và Alex đang chạy.");
             String currentHost = discoverHost(port, fingerprint, token);
             if (currentHost == null)
                 throw new IOException("Đã lưu ghép nối, nhưng không tìm thấy Alex trên cùng Wi-Fi. Kiểm tra Alex trên PC và quy tắc Avast cho cổng 8768.", unavailable);
@@ -125,6 +126,38 @@ final class AlexConnection {
 
     private static final class HostUnavailableException extends IOException {
         HostUnavailableException(IOException cause) { super(cause); }
+    }
+
+    JSONObject unlockStatus() throws Exception {
+        return unlockPost(unlockEndpoint(), "/unlock/status", new byte[0], null, null);
+    }
+
+    JSONObject unlockWithPin(byte[] pin, java.util.concurrent.atomic.AtomicBoolean cancelled) throws Exception {
+        try {
+            if(cancelled.get()) return new JSONObject().put("status","cancelled");
+            // Keep pairing identity and destination fixed for this entire attempt.
+            UnlockTransport.Endpoint endpoint=unlockEndpoint();
+            JSONObject challenge=unlockPost(endpoint,"/unlock/challenge",new byte[0],null,cancelled);
+            if(!"ready".equals(challenge.optString("status"))) return challenge;
+            String nonce=challenge.optString("challenge");
+            if(!nonce.matches("[0-9a-f]{32}")) throw new IOException("Invalid challenge");
+            if(cancelled.get()) return new JSONObject().put("status","cancelled");
+            // Exactly one POST. Never rediscover a host or retry credential submission.
+            return unlockPost(endpoint,"/unlock/submit",pin,nonce,cancelled);
+        } finally { java.util.Arrays.fill(pin,(byte)0); }
+    }
+
+    private UnlockTransport.Endpoint unlockEndpoint() throws Exception {
+        if(!isPaired()) return null;
+        return new UnlockTransport.Endpoint(host(),prefs.getInt("port",8768),
+            prefs.getString("fingerprint",""),decrypt(prefs.getString("token","")));
+    }
+
+    private static JSONObject unlockPost(UnlockTransport.Endpoint endpoint,String path,byte[] body,
+                                         String nonce,java.util.concurrent.atomic.AtomicBoolean cancelled) throws Exception {
+        if(endpoint==null) return new JSONObject().put("status","not_paired");
+        UnlockTransport.Response response=UnlockTransport.post(endpoint,path,body,nonce,cancelled);
+        return response.status!=null ? new JSONObject().put("status",response.status) : new JSONObject(response.json);
     }
 
     private static String discoverHost(int port, String fingerprint, String token) throws Exception {
@@ -178,37 +211,18 @@ final class AlexConnection {
     private static JSONObject post(String host, int port, String fingerprint, String path,
                                    String contentType, byte[] body, String token,
                                    int connectTimeout) throws Exception {
-        TrustManager[] managers = {new X509TrustManager() {
-            @Override public X509Certificate[] getAcceptedIssuers() { return new X509Certificate[0]; }
-            @Override public void checkClientTrusted(X509Certificate[] chain, String authType)
-                    throws CertificateException { throw new CertificateException("Client certificate not accepted"); }
-            @Override public void checkServerTrusted(X509Certificate[] chain, String authType)
-                    throws CertificateException {
-                if (chain == null || chain.length == 0) throw new CertificateException("Missing PC certificate");
-                try {
-                    byte[] digest = MessageDigest.getInstance("SHA-256").digest(chain[0].getEncoded());
-                    StringBuilder hex = new StringBuilder();
-                    for (byte value : digest) hex.append(String.format("%02x", value & 0xff));
-                    if (!MessageDigest.isEqual(hex.toString().getBytes(StandardCharsets.US_ASCII),
-                            fingerprint.getBytes(StandardCharsets.US_ASCII)))
-                        throw new CertificateException("PC fingerprint does not match QR code");
-                } catch (CertificateException error) { throw error;
-                } catch (Exception error) { throw new CertificateException(error); }
-            }
-        }};
-        SSLContext ssl = SSLContext.getInstance("TLS");
-        ssl.init(null, managers, new SecureRandom());
-        HttpsURLConnection connection = (HttpsURLConnection) new URL("https://" + host + ":" + port + path).openConnection();
-        connection.setSSLSocketFactory(ssl.getSocketFactory());
-        // The QR code pins the exact server certificate instead of a public DNS name.
-        connection.setHostnameVerifier((hostname, session) -> hostname.equals(host));
-        connection.setRequestMethod("POST");
-        connection.setConnectTimeout(connectTimeout);
-        connection.setReadTimeout("/status".equals(path) ? connectTimeout : 245000);
-        connection.setDoOutput(true);
-        connection.setFixedLengthStreamingMode(body.length);
+        return post(host,port,fingerprint,path,contentType,body,token,connectTimeout,null);
+    }
+
+    private static JSONObject post(String host, int port, String fingerprint, String path,
+                                   String contentType, byte[] body, String token,
+                                   int connectTimeout, String nonce) throws Exception {
+        HttpsURLConnection connection = PinnedTls.open(host, port, path, fingerprint,
+                connectTimeout, path.startsWith("/unlock/") ? 25000 : "/status".equals(path) ? connectTimeout : 245000,
+                body.length);
         connection.setRequestProperty("Content-Type", contentType);
         if (token != null) connection.setRequestProperty("Authorization", "Bearer " + token);
+        if (nonce != null) connection.setRequestProperty("X-Alex-Unlock-Challenge",nonce);
         try {
             OutputStream output;
             try { output = connection.getOutputStream(); }
@@ -221,10 +235,12 @@ final class AlexConnection {
             byte[] chunk = new byte[8192];
             int n;
             while ((n = input.read(chunk)) != -1) {
-                if (bytes.size() + n > 18_000_000) throw new IllegalStateException("Câu trả lời quá dài.");
+                if (bytes.size() + n > (path.startsWith("/unlock/") ? 8192 : 18_000_000)) throw new IllegalStateException("Câu trả lời quá dài.");
                 bytes.write(chunk, 0, n);
             }
             JSONObject data = new JSONObject(bytes.toString("UTF-8"));
+            if(path.startsWith("/unlock/") && connection.getResponseCode()>=400)
+                return new JSONObject().put("status", connection.getResponseCode()==401 ? "not_paired" : "unknown_result");
             if (connection.getResponseCode() >= 400) throw new IllegalStateException(data.optString("error", "Alex không trả lời."));
             return data;
         } finally { connection.disconnect(); }

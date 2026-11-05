@@ -21,6 +21,26 @@ class AppCommandTests(unittest.TestCase):
     def setUp(self):
         self.cfg = load_config()
         self.entries = self.cfg['apps']['entries']
+        fixtures = [
+            {'name': 'Task Manager', 'aliases': ['quản lý tác vụ'], 'app_id': 'Test.TaskManager'},
+            {'name': 'Claude', 'aliases': ['clau de', 'closet'],
+             'spoken_commands': ['Hãy bỏ Closier Desktop cho tôi'], 'app_id': 'Test.Claude'},
+            {'name': 'TLauncher', 'aliases': ['Minecraft', 'Minecraft Launcher', 'Minecraft trong TLauncher'],
+             'executable_path': 'C:/test/javaw.exe', 'java_jar_path': 'C:/test/TLauncher.jar',
+             'java_trust_store_path': 'C:/test/cacerts', 'working_directory': 'C:/test',
+             'processes': ['javaw.exe'], 'title_contains': 'TLauncher'},
+        ]
+        for fixture in fixtures:
+            if fixture['name'] == 'TLauncher':
+                self.entries[:] = [entry for entry in self.entries if entry['name'] != 'TLauncher']
+            existing = next((entry for entry in self.entries if entry['name'] == fixture['name']), None)
+            if existing is None:
+                self.entries.append(fixture)
+            elif fixture['name'] == 'Claude':
+                existing.setdefault('spoken_commands', []).extend(fixture['spoken_commands'])
+        for site in self.cfg['web']['sites']:
+            if site['name'] == 'Messenger':
+                site['url'] = 'https://www.messenger.com/t/test-thread'
 
     def test_explicit_app_aliases(self):
         for question, expected in [('Mở Spotify giúp mình.', 'Spotify'),
@@ -114,7 +134,10 @@ class AppCommandTests(unittest.TestCase):
         waiting = MagicMock()
         waiting.is_set.return_value = False
         waiting.wait.return_value = True
-        with patch('pet.apps.subprocess.Popen') as launch:
+        with patch('pet.apps.subprocess.Popen') as launch, \
+             patch('pet.apps.Path.is_file', return_value=True), \
+             patch('pet.apps.Path.is_dir', return_value=True), \
+             patch('pet.apps._short_windows_path', side_effect=lambda path: 'C:/test/' + path.name):
             open_registered_app(entry, waiting)
         arguments = launch.call_args.args[0]
         self.assertEqual(arguments[0], str(Path(entry['executable_path'])))
@@ -138,7 +161,7 @@ class AppCommandTests(unittest.TestCase):
         self.assertTrue(wants_minecraft_game('Mở Minecraft trong TLauncher'))
         self.assertFalse(wants_minecraft_game('Mở TLauncher'))
         engine = Controller(self.cfg)
-        engine.chat = MagicMock()
+        engine.chat = engine.gemini_chat = MagicMock()
         engine.chat.stream.return_value = iter(['Được rồi.'])
         engine.speaker = MagicMock()
         with patch('pet.controller.launch_minecraft', return_value=LaunchResult(
@@ -169,7 +192,7 @@ class AppCommandTests(unittest.TestCase):
         click.assert_called_once_with(123, (600, 900))
 
     def test_busy_chat_does_not_prevent_app_launch_or_spoken_result(self):
-        engine = Controller(self.cfg); engine.chat = MagicMock(); engine.speaker = MagicMock()
+        engine = Controller(self.cfg); engine.chat = engine.gemini_chat = MagicMock(); engine.speaker = MagicMock()
         engine.chat.stream.side_effect = RuntimeError('busy')
         with patch('pet.controller.open_registered_app', return_value=LaunchResult(
                 'Spotify', True, True, .1)) as launch:
@@ -182,7 +205,7 @@ class AppCommandTests(unittest.TestCase):
 
     def test_autocad_request_after_zalo_does_not_open_a_contact(self):
         engine = Controller(self.cfg)
-        engine.chat = MagicMock()
+        engine.chat = engine.gemini_chat = MagicMock()
         engine.chat.stream.return_value = iter(())
         engine.speaker = MagicMock()
         engine.app_actions = MagicMock()
@@ -195,7 +218,7 @@ class AppCommandTests(unittest.TestCase):
         engine.app_actions.execute.assert_not_called()
 
     def test_verified_status_is_spoken_once_before_model_finishes(self):
-        engine = Controller(self.cfg); engine.chat = MagicMock(); engine.speaker = MagicMock()
+        engine = Controller(self.cfg); engine.chat = engine.gemini_chat = MagicMock(); engine.speaker = MagicMock()
         engine.request_plan = MagicMock(return_value=True)
         heard = threading.Event()
         def stream(question, cancelled):
@@ -213,7 +236,7 @@ class AppCommandTests(unittest.TestCase):
         self.assertIsNone(engine.chat.on_submitted)
 
     def test_bionic_error_after_action_is_not_reported_as_action_failure(self):
-        engine = Controller(self.cfg); engine.chat = MagicMock(); engine.speaker = MagicMock()
+        engine = Controller(self.cfg); engine.chat = engine.gemini_chat = MagicMock(); engine.speaker = MagicMock()
         def stream(question, cancelled):
             raise RuntimeError('model failed after submission')
             yield ''
@@ -283,6 +306,22 @@ class AppCommandTests(unittest.TestCase):
             with self.subTest(question=question):
                 self.assertIsNone(requested_web(question))
 
+    def test_youtube_voice_variants_open_web_only_as_commands(self):
+        for question in ('Mở YouTube cho tôi.', 'Mở ứng dụng YouTube cho tôi.',
+                         'Mở phần mềm YouTube cho tôi.', 'Mở app YouTube cho tôi.',
+                         'Mở ứng dụng tấp cho tôi.', 'Mở dụng tức cho tôi.',
+                         'Hãy bật bờ YouTube cho tôi.', 'Mời cho tôi youtube.google.',
+                         'bởi youtube ở trong google cho tôi.', 'Bạn hãy mở YouTube cho tôi.',
+                         'Cho tôi mở YouTube.', 'Mở You Tube cho tôi.',
+                         'Mở du túp cho tôi.', 'Mở diu túp cho tôi.'):
+            with self.subTest(question=question):
+                self.assertEqual(requested_web(question),
+                                 ('https://www.youtube.com', 'YouTube'))
+        for question in ('Đừng mở YouTube cho tôi', 'Không mở YouTube',
+                         'Mở YouTube rồi xóa tệp'):
+            with self.subTest(question=question):
+                self.assertIsNone(requested_web(question))
+
     def test_saved_portal_opens_exact_user_url(self):
         sites = self.cfg['web']['sites']
         for question in ('Mở trang học tập', 'Mở Portal UT',
@@ -295,7 +334,7 @@ class AppCommandTests(unittest.TestCase):
 
     def test_saved_messenger_link_opens_from_voice_command(self):
         sites = self.cfg['web']['sites']
-        expected = ('https://www.messenger.com/', 'Messenger')
+        expected = ('https://www.messenger.com/t/test-thread', 'Messenger')
         for question in ('Mở Messenger', 'Hãy mở Messenger cho tôi',
                          'Mở Messenger trên web', 'Mở mesenger trong Google'):
             with self.subTest(question=question):
@@ -403,7 +442,7 @@ class AppCommandTests(unittest.TestCase):
 
     def test_uncertain_app_name_asks_then_opens_only_after_yes(self):
         engine = Controller(self.cfg)
-        engine.chat = MagicMock()
+        engine.chat = engine.gemini_chat = MagicMock()
         engine.speaker = MagicMock()
         entry = {'name': 'Claude', 'app_id': 'Claude.App!Main',
                  'title_contains': 'Claude'}
@@ -421,7 +460,7 @@ class AppCommandTests(unittest.TestCase):
 
     def test_installed_app_takes_priority_over_known_website(self):
         engine = Controller(self.cfg)
-        engine.chat = MagicMock()
+        engine.chat = engine.gemini_chat = MagicMock()
         engine.speaker = MagicMock()
         entry = {'name': 'ChatGPT', 'app_id': 'ChatGPT.App!Main',
                  'title_contains': 'ChatGPT'}
@@ -438,7 +477,7 @@ class AppCommandTests(unittest.TestCase):
         for question in ('M bò tức tác cho tôi.', 'm hãy mở tích tác cho tôi.'):
             with self.subTest(question=question):
                 engine = Controller(self.cfg)
-                engine.chat = MagicMock()
+                engine.chat = engine.gemini_chat = MagicMock()
                 engine.speaker = MagicMock()
                 with patch('pet.controller.requested_system_app', return_value=entry) as system_app, \
                      patch('pet.controller.open_registered_app') as app, \
@@ -452,7 +491,7 @@ class AppCommandTests(unittest.TestCase):
 
     def test_saved_messenger_link_takes_priority_over_app_search(self):
         engine = Controller(self.cfg)
-        engine.chat = MagicMock()
+        engine.chat = engine.gemini_chat = MagicMock()
         engine.speaker = MagicMock()
         with patch('pet.controller.requested_system_app') as system_app, \
              patch('pet.controller.open_registered_app') as app, \
@@ -460,7 +499,7 @@ class AppCommandTests(unittest.TestCase):
                  'Messenger', True, True, .1, 'web')) as web:
             engine._answer('Mở Messenger cho tôi',
                            Utterance(np.zeros(100), time.monotonic()), 0)
-        web.assert_called_once_with('https://www.messenger.com/',
+        web.assert_called_once_with('https://www.messenger.com/t/test-thread',
                                     'Messenger')
         system_app.assert_not_called()
         app.assert_not_called()
@@ -478,7 +517,7 @@ class AppCommandTests(unittest.TestCase):
 
     def test_controller_opens_unconfigured_registered_app(self):
         engine = Controller(self.cfg)
-        engine.chat = MagicMock()
+        engine.chat = engine.gemini_chat = MagicMock()
         engine.speaker = MagicMock()
         entry = {'name': 'Example App', 'app_id': 'Example.App!App',
                  'title_contains': 'Example App'}
@@ -497,7 +536,7 @@ class AppCommandTests(unittest.TestCase):
             self.assertFalse(open_web('https://portal.ut.edu.vn/', 'Portal UT').verified)
 
     def test_unknown_open_is_reported_without_false_success(self):
-        engine = Controller(self.cfg); engine.chat = MagicMock(); engine.speaker = MagicMock()
+        engine = Controller(self.cfg); engine.chat = engine.gemini_chat = MagicMock(); engine.speaker = MagicMock()
         with patch('pet.controller.open_web') as web, patch('pet.controller.open_registered_app') as app:
             result = engine._answer('Mở trang web không biết',
                                     Utterance(np.zeros(100), time.monotonic()), 0)
@@ -507,7 +546,7 @@ class AppCommandTests(unittest.TestCase):
 
     def test_app_and_web_launch_without_request_plan(self):
         engine = Controller(self.cfg)
-        engine.chat = MagicMock()
+        engine.chat = engine.gemini_chat = MagicMock()
         engine.speaker = MagicMock()
         engine.request_plan = MagicMock(side_effect=AssertionError("request_plan should NOT be called for app/web launch"))
 

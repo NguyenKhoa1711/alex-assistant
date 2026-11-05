@@ -3,7 +3,7 @@ import logging
 import math
 from PySide6.QtCore import Qt, QTimer, QPoint, QPointF, QRectF, QUrl
 from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPen, QFont, QPixmap, QIcon, QDesktopServices, QGuiApplication, QPolygonF
-from PySide6.QtWidgets import QWidget, QApplication, QMenu, QSystemTrayIcon, QDialog, QVBoxLayout, QTextEdit, QPlainTextEdit, QDialogButtonBox, QLabel, QPushButton, QMessageBox
+from PySide6.QtWidgets import QWidget, QApplication, QMenu, QSystemTrayIcon, QDialog, QVBoxLayout, QTextEdit, QPlainTextEdit, QDialogButtonBox, QLabel, QPushButton, QMessageBox, QInputDialog, QLineEdit
 import yaml
 import qrcode
 from .config import ROOT
@@ -29,14 +29,14 @@ class PetWindow(QWidget):
         self.drag_start: QPoint | None = None
         self.dragged = False
         self.closing = False
-        self.setWindowTitle('Alex — Ctrl+Space trò chuyện trong Bionic')
+        self.setWindowTitle('Alex — trợ lý trên máy tính')
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint |
                             Qt.WindowType.Tool | Qt.WindowType.WindowDoesNotAcceptFocus)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self._resize_pet()
-        self.setToolTip('Ctrl+Space mở/ẩn và bật/tắt mic. Nói câu hỏi để gửi vào chat Bionic. Bấm pet để ngắt tiếng; kéo để di chuyển.')
+        self.setToolTip('Ctrl+Space mở/ẩn và bật/tắt mic. Nói câu hỏi hoặc mở cửa sổ Alex để nhập chữ. Bấm pet để ngắt tiếng; kéo để di chuyển.')
         screen = QApplication.primaryScreen().availableGeometry()
         x, y = cfg['pet']['x'], cfg['pet']['y']
         self.move(screen.right() - self.width() - 30 if x is None else x,
@@ -67,7 +67,7 @@ class PetWindow(QWidget):
         p.end()
         self.setWindowIcon(QIcon(icon))
         self.tray = QSystemTrayIcon(QIcon(icon), self)
-        self.tray.setToolTip('Alex · Ctrl+Space mở/ẩn · chat Bionic')
+        self.tray.setToolTip('Alex · Ctrl+Space mở/ẩn pet')
         self.tray.setContextMenu(self.menu)
         self.tray.activated.connect(lambda reason: self.toggle_visibility() if reason == QSystemTrayIcon.ActivationReason.Trigger else None)
         self.tray.show()
@@ -76,12 +76,14 @@ class PetWindow(QWidget):
         if not self.hotkey.registered:
             self.tray.showMessage('Alex', 'Ctrl+Space đang được ứng dụng khác dùng. Bấm biểu tượng Alex ở khay để mở.')
         else:
-            self.tray.showMessage('Alex - Bionic', 'Alex đã mở và sẵn sàng! Bạn có thể nói hoặc bấm Ctrl+Space.', QSystemTrayIcon.MessageIcon.Information, 5000)
+            self.tray.showMessage('Alex', 'Alex đã mở và sẵn sàng! Bạn có thể nói hoặc bấm Ctrl+Space.', QSystemTrayIcon.MessageIcon.Information, 5000)
         engine.state.connect(self.set_state)
         engine.transcript.connect(self.new_question)
         engine.reply.connect(self.new_answer)
         engine.timing.connect(self.set_timing)
         engine.confirmation.connect(self.confirm_action)
+        if hasattr(engine, 'pet_visibility'):
+            engine.pet_visibility.connect(self.set_pet_visibility)
         engine.finished.connect(self._worker_finished)
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.animate)
@@ -107,6 +109,9 @@ class PetWindow(QWidget):
                 or self.shape != 'robot-heads' or not self.isVisible() or self.closing):
             return
         if self.cfg['pet'].get('robot_renderer', 'live') != 'live':
+            return
+        if hasattr(self.engine, 'desktop_ready') and self.engine.isRunning() and not self.engine.desktop_ready.is_set():
+            QTimer.singleShot(500, self._ensure_live_robot)
             return
         # WebEngine can re-enter showEvent while making the parent window native.
         self._creating_live_robot = True
@@ -134,12 +139,16 @@ class PetWindow(QWidget):
 
     def _make_menu(self) -> QMenu:
         menu = QMenu(self)
+        menu.addAction('Mở ứng dụng Alex', self.show_desktop_app)
+        menu.addSeparator()
         menu.addAction('Mở / ẩn pet · Ctrl+Space', self.toggle_visibility)
         self.pause_action = menu.addAction('Tạm dừng nghe', self.toggle_pause)
         menu.addAction('Xem câu hỏi và câu trả lời', self.history.show)
         menu.addAction('Các cách nói Alex đã học', self.show_learning)
         menu.addAction('Ngắt thao tác / thu hồi kế hoạch', self.engine.interrupt)
-        menu.addAction('Công cụ và quyền thao tác: xem trong Bionic', self.open_bionic)
+        gemini_label = ('Thiết lập Gemini API (tùy chọn)' if getattr(self.engine, 'local_gemma', False)
+                        else 'Thiết lập Gemini API')
+        menu.addAction(gemini_label, self.configure_gemini)
         shapes = menu.addMenu('Hình dáng pet')
         for key, label in [('robot-heads', 'Robot tròn xanh ngọc · robot-heads'),
                            ('mascot', 'Alex hoạt hình (hình cũ)')]:
@@ -150,8 +159,10 @@ class PetWindow(QWidget):
         self.follow_action.setChecked(self.cfg['pet'].get('follow_cursor', True))
         self.follow_action.toggled.connect(self.toggle_follow_cursor)
         menu.addSeparator()
-        menu.addAction('Mở Bionic', self.open_bionic)
+
         if self.mobile:
+            if self.cfg.get('power', {}).get('remote_wait_on_ac', False):
+                menu.addAction('Khóa máy · giữ kết nối mở khóa từ xa', self.request_remote_wait)
             menu.addAction('Kết nối điện thoại Alex', self.show_phone_pairing)
             menu.addAction('Quên điện thoại đã ghép…', self.revoke_phone)
         menu.addAction('Mở cấu hình', lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(ROOT / 'config.yaml'))))
@@ -160,6 +171,17 @@ class PetWindow(QWidget):
         menu.addSeparator()
         menu.addAction('Thoát Alex', self.quit_pet)
         return menu
+
+    def show_desktop_app(self) -> None:
+        if not hasattr(self, '_desktop_app_window'):
+            from .app_window import AlexAppWindow
+            self._desktop_app_window = AlexAppWindow(self.engine, self)
+        self._desktop_app_window.show_app()
+
+    def request_remote_wait(self) -> None:
+        message = self.engine.request_remote_wait()
+        self.tray.showMessage('Alex · Chờ mở khóa từ xa', message,
+                              QSystemTrayIcon.MessageIcon.Information, 5000)
 
     def show_phone_pairing(self) -> None:
         if not self.mobile:
@@ -200,7 +222,11 @@ class PetWindow(QWidget):
         dialog.setWindowTitle('Alex — kết nối điện thoại')
         dialog.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.WindowStaysOnTopHint)
         layout = QVBoxLayout(dialog)
-        layout.addWidget(QLabel('Mở ứng dụng Alex trên Android, quét mã bằng Camera của điện thoại.\nPC và điện thoại cần cùng Wi-Fi. Mã dùng một lần, hết hạn sau 5 phút.'))
+        network_hint = ('Bật Tailscale trên hai thiết bị cùng tài khoản; có thể dùng khác Wi-Fi.'
+                        if self.mobile.remote_host() and self.mobile.proxy_server else
+                        'PC và điện thoại cần cùng Wi-Fi. Kết nối Internet chưa được thiết lập.')
+        layout.addWidget(QLabel('Mở Alex trên Android và chọn Quét QR.\n' + network_hint +
+                               '\nMã dùng một lần, hết hạn sau 5 phút.'))
         image = QLabel(dialog); image.setPixmap(pix)
         image.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(image)
@@ -246,30 +272,41 @@ class PetWindow(QWidget):
         view.setPlainText('\n'.join(lines)); layout.addWidget(view)
         dialog.exec()
 
-    def open_bionic(self) -> None:
-        # Keep process startup and window discovery off the GUI thread.
-        from .launcher import open_bionic
-        import threading
-        def launch() -> None:
-            try:
-                open_bionic(self.cfg['bionic']['bridge_port'])
-            except Exception as exc:
-                self.engine.state.emit('error', str(exc))
-        threading.Thread(target=launch, daemon=True).start()
+    def configure_gemini(self) -> None:
+        from .gemini import save_api_key
+        QDesktopServices.openUrl(QUrl('https://aistudio.google.com/app/apikey'))
+        value, accepted = QInputDialog.getText(self, 'Kết nối Gemini',
+            'Tạo khóa Gemini API trong trang vừa mở rồi dán vào đây. Alex lưu khóa trong Windows Credential Manager.',
+            QLineEdit.EchoMode.Password)
+        if not accepted:
+            return
+        try:
+            save_api_key(value)
+            if getattr(self.engine, 'local_gemma', False):
+                self.tray.showMessage('Alex', 'Đã lưu khóa Gemini. Alex vẫn đang dùng Gemma trên laptop.')
+                self.engine.state.emit('idle', 'Gemma trên laptop · mic vẫn theo trạng thái hiện tại')
+            else:
+                self.tray.showMessage('Alex', 'Đã lưu khóa Gemini an toàn. Bạn có thể trò chuyện ngay.')
+                self.engine.state.emit('idle', 'Gemini đã kết nối · mic vẫn theo trạng thái hiện tại')
+        except Exception as exc:
+            QMessageBox.warning(self, 'Chưa kết nối Gemini', str(exc))
 
-    def toggle_visibility(self) -> None:
-        if self.isVisible():
+    def set_pet_visibility(self, visible: bool) -> None:
+        if visible:
+            self.engine.paused.clear()
+            self.show()
+            self.raise_()
+            logging.info('Pet shown; conversation microphone enabled')
+        else:
             self.engine.paused.set()
             self.engine.interrupt()
             if self.engine.mic:
                 self.engine.mic.gate(False)
             self.hide()
             logging.info('Pet hidden; microphone gated off')
-        else:
-            self.engine.paused.clear()
-            self.show()
-            self.raise_()
-            logging.info('Pet shown; conversation microphone enabled')
+
+    def toggle_visibility(self) -> None:
+        self.set_pet_visibility(not self.isVisible())
 
     def toggle_computer(self, enabled: bool) -> None:
         self.engine.computer_enabled = enabled
@@ -514,6 +551,9 @@ class PetWindow(QWidget):
         self.timer.stop()
         self.robot_release_timer.stop()
         self.robot_head.close()
+        if hasattr(self, '_desktop_app_window'):
+            self._desktop_app_window.avatar.robot.close()
+            self._desktop_app_window.hide()
         if self.live_robot is not None:
             self.live_robot.shutdown()
         if not self.engine.isRunning():

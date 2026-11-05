@@ -7,9 +7,12 @@ from pet.config import load_config
 class WebMcpTests(unittest.TestCase):
     def setUp(self):
         self.cfg = load_config()
+        for site in self.cfg['web']['sites']:
+            if site['name'] == 'Messenger':
+                site['url'] = 'https://www.messenger.com/t/test-thread'
 
     def test_user_link_and_saved_site_resolve_to_same_address(self):
-        address = 'https://www.messenger.com/'
+        address = 'https://www.messenger.com/t/test-thread'
         self.assertEqual(resolve_web(address, self.cfg), (address, 'www.messenger.com'))
         self.assertEqual(resolve_web('Messenger', self.cfg), (address, 'Messenger'))
 

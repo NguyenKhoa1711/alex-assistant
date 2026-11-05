@@ -1,0 +1,11 @@
+{
+  "repository": "https://github.com/FatihMakes/Mark-LVI",
+  "revision": "4d4035c1b40a3bc796ac63f2f1b6a99bc0dd334d",
+  "reference_video": "https://www.youtube.com/shorts/Cwt-Jz6-sEw",
+  "sha256_before_adaptation": {
+    "avatar.py": "e582d3e88913baa69aba4d0f6ff921d23195bc4c5c16ef918f7082b385377fde",
+    "avatar_mesh.py": "305682e6166db50945c91ef9b75207c534c0b6418780d0d97af9035899163c27",
+    "face_model.obj": "aaea216b33c94f89036a8d80cfeabf5375b5e32477fbd3982710ca48d3649694",
+    "LICENSE": "46089d78b1244dc7080e7da468e1c63c5a8cfe70c10b75870109c6e6d7458e6f"
+  }
+}

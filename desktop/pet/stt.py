@@ -14,7 +14,7 @@ from .config import local_path
 _DLL_HANDLES: list[object] = []
 
 DEFAULT_PROMPT = ('Tiếng Việt. Trợ lý Alex. Lệnh điều khiển: mở ứng dụng, mở thư mục, '
-                  'mở trang web, tìm kiếm. Nhận đúng lời người nói, kể cả tên phần mềm.')
+                  'mở trang web, lướt web, dừng lướt web, tìm kiếm. Nhận đúng lời người nói, kể cả tên phần mềm.')
 
 
 @dataclass(frozen=True)
@@ -27,6 +27,14 @@ class RecognitionDiagnostic:
 def recognition_config(config: dict) -> dict:
     """Add canonical names, not past STT mistakes, to a bounded vocabulary hint."""
     stt = dict(config['stt'])
+    # Keep the original user configuration and rejection thresholds. This is
+    # only a short vocabulary hint, never a forced transcript or second decode.
+    prompt = (str(stt.get('initial_prompt') or '').strip() or DEFAULT_PROMPT)
+    if 'phóng to' not in prompt.casefold() or 'thu nhỏ' not in prompt.casefold():
+        prompt += ' phóng to, thu nhỏ, khôi phục cửa sổ.'
+    if 'lướt web' not in prompt.casefold():
+        prompt += ' Lướt web, dừng lướt web.'
+    stt['initial_prompt'] = prompt
     names = str(stt.get('hotwords') or '').split(',')
     names += [str(entry.get('name', '')) for entry in config.get('apps', {}).get('entries', [])]
     names += [str(entry.get('name', '')) for entry in config.get('web', {}).get('sites', [])]
@@ -37,7 +45,7 @@ def recognition_config(config: dict) -> dict:
         key = name.casefold()
         if not name or key in seen:
             continue
-        if len(', '.join([*kept, name])) > 500:
+        if len(', '.join([*kept, name])) > 180:
             continue
         seen.add(key)
         kept.append(name)
@@ -62,12 +70,36 @@ def excessive_repetition(text: str) -> bool:
     return False
 
 
+def repeated_prompt_echo(text: str, prompt: str) -> bool:
+    """Reject a whole transcript that only repeats a fragment of a hint."""
+    words = re.findall(r'\w+', text.casefold())
+    hint_words = re.findall(r'\w+', (prompt + ' Điều khiển cửa sổ.').casefold())
+    for width in range(3, len(words) // 2 + 1):
+        if len(words) % width:
+            continue
+        block = words[:width]
+        if words == block * (len(words) // width) and any(
+                hint_words[i:i + width] == block
+                for i in range(len(hint_words) - width + 1)):
+            return True
+    return False
+
+
 def correct_command_prefix(text: str) -> str:
     """Repair a common Vietnamese opening-command error without changing ordinary speech."""
-    if re.match(r'^bởi\s+', text, re.IGNORECASE) and re.search(
+    if (re.match(r'^(?:(?:hãy|bạn)\s+)*bởi\s+(?!vì\b)', text, re.IGNORECASE) and re.search(
             r'\b(?:cho|giúp)\s+(?:tôi|mình)\b|\b(?:ở\s+)?trong\s+(?:google|chrome)\b',
-            text, re.IGNORECASE):
-        return re.sub(r'^bởi\b', 'Mở', text, count=1, flags=re.IGNORECASE)
+            text, re.IGNORECASE)):
+        if re.match(r'^bởi\s+', text, re.IGNORECASE):
+            text = re.sub(r'^bởi\b', 'Mở', text, count=1, flags=re.IGNORECASE)
+        else:
+            text = re.sub(r'\bbởi\b', 'mở', text, count=1, flags=re.IGNORECASE)
+    text = re.sub(
+        r'(?i)\b(?:look|loop|loot|load|log|lúc|lước|nướt|lượt|luốt|lươt)\s+'
+        r'(?=(?:web|quép|quét|ghép|guép|wep|trang\s+web|trình\s+duyệt|tiktok|tik\s*tok|facebook|youtube|xuống|lên|tiếp)\b)',
+        'lướt ',
+        text,
+    )
     return text
 
 
@@ -93,6 +125,17 @@ class SpeechToText:
             prepare_cuda_libraries()
         try:
             self.model = self._load(self.device, config['compute_type'])
+            if type(self.model).__name__ == 'WhisperModel':
+                try:
+                    list(self.model.transcribe(
+                        np.zeros(4800, dtype=np.float32),
+                        language='vi',
+                        beam_size=1,
+                        without_timestamps=True,
+                        vad_filter=False,
+                    )[0])
+                except Exception:
+                    pass
         except Exception:
             if self.device != 'cuda':
                 raise
@@ -125,9 +168,20 @@ class SpeechToText:
                 self.cfg.get('silence_floor', 0.0015)):
             self.last_diagnostic = RecognitionDiagnostic(reason='quiet_audio', audio_seconds=duration)
             return '', time.monotonic() - started
+        work_samples = samples
+        if samples.size > 8000:
+            floor = float(self.cfg.get('silence_floor', 0.0015))
+            active_idx = np.flatnonzero(np.abs(samples) >= floor)
+            if active_idx.size > 0:
+                end_i = min(samples.size, int(active_idx[-1]) + 2400)
+                # Keep the full pre-roll: quiet initial syllables can be below
+                # the amplitude floor even though later speech crosses it.
+                if end_i >= 3200:
+                    work_samples = samples[:end_i]
         def decode() -> str:
-            segments, _ = self.model.transcribe(samples, language='vi',
+            segments, _ = self.model.transcribe(work_samples, language='vi',
                 beam_size=self.cfg['beam_size'], condition_on_previous_text=False,
+                without_timestamps=True,
                 temperature=float(self.cfg.get('temperature', 0.0)),
                 hotwords=self.cfg.get('hotwords'),
                 vad_filter=False, no_speech_threshold=0.6,
@@ -152,6 +206,9 @@ class SpeechToText:
                          len(text), duration)
             text = ''
             reason = 'text_density'
+        if text and repeated_prompt_echo(
+                text, (self.cfg.get('initial_prompt') or '').strip() or DEFAULT_PROMPT):
+            text, reason = '', 'repeated_prompt_echo'
         if text and excessive_repetition(text):
             text, reason = '', 'repetition'
         if text and not re.search(r'\w', text, re.UNICODE):

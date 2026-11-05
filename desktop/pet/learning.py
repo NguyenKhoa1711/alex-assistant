@@ -96,13 +96,13 @@ def valid_target(action: Action, entries: list[dict]) -> bool:
                 not url.username and not url.password and len(action.query) <= 2000)
     if action.app == 'Desktop' and action.operation == 'task':
         return bool(action.query.strip()) and len(action.query) <= 1200 and not action.artist
-    if action.app not in {entry['name'] for entry in entries}:
+    if action.app not in ({entry['name'] for entry in entries} | {'YouTube'}):
         return False
     if action.operation == 'launch':
+        return action.app != 'YouTube' and not action.query and not action.artist
+    if action.app in ('Spotify', 'YouTube') and action.operation in ('play', 'pause', 'next', 'previous'):
         return not action.query and not action.artist
-    if action.app == 'Spotify' and action.operation in ('play', 'pause', 'next', 'previous'):
-        return not action.query and not action.artist
-    if (action.app, action.operation) not in (('Spotify', 'song'), ('Zalo', 'chat')):
+    if (action.app, action.operation) not in (('Spotify', 'song'), ('YouTube', 'song'), ('Zalo', 'chat')):
         return False
     return bool(action.query) and len(action.query) <= 150 and len(action.artist) <= 150 and not any(
         c in action.query + action.artist for c in '\r\n')
@@ -118,9 +118,9 @@ def describe(action: Action) -> str:
     if action.operation == 'chat':
         return f'mở tin nhắn với {action.query} trên Zalo'
     if action.operation == 'song':
-        return f'phát bài {action.query}' + (f' của {action.artist}' if action.artist else '') + ' trên Spotify'
-    return {'play': 'phát nhạc Spotify', 'pause': 'tạm dừng nhạc Spotify',
-            'next': 'chuyển bài tiếp theo trên Spotify', 'previous': 'quay lại bài trước trên Spotify'}[action.operation]
+        return f'phát bài {action.query}' + (f' của {action.artist}' if action.artist else '') + f' trên {action.app}'
+    return {'play': f'phát nhạc {action.app}', 'pause': f'tạm dừng nhạc {action.app}',
+            'next': f'chuyển bài tiếp theo trên {action.app}', 'previous': f'quay lại bài trước trên {action.app}'}[action.operation]
 
 
 class LearningStore:

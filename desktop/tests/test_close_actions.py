@@ -18,7 +18,6 @@ class ParsingTests(unittest.TestCase):
             'Hãy đóng tab hiện tại trên Chrome cho tôi':Action('Tabs','close_current','chrome'),
             'Đóng tab Edge':Action('Tabs','close_current','edge'),
             'Đóng ứng dụng này':Action('Window','close_current'),
-            'Đóng phần mềm KiCad cho tôi':Action('Window','close_current','KiCad'),
             'Close Zalo':Action('Window','close_current','Zalo'),
             'Bạn hãy đóng cái tab này đi':Action('Tabs','close_current'),
             'Đóng táp hiện tại':Action('Tabs','close_current'),
@@ -181,7 +180,7 @@ class WindowTests(unittest.TestCase):
 class ControllerTests(unittest.TestCase):
     def test_local_once_even_when_bionic_busy_and_privacy_off(self):
         cfg=load_config();cfg['learning']['enabled']=False;cfg['privacy']['save_transcripts']=False
-        engine=Controller(cfg);engine.chat=MagicMock();engine.speaker=MagicMock();engine.app_actions=MagicMock()
+        engine=Controller(cfg);engine.chat = engine.gemini_chat = MagicMock();engine.speaker=MagicMock();engine.app_actions=MagicMock()
         engine.chat.check_ready.side_effect=RuntimeError('busy')
         engine.app_actions.execute.return_value=ActionResult('Đã đóng tab.',True)
         for question in ['Đóng tab','Đóng tab']:

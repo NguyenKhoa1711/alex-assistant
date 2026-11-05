@@ -1,4 +1,4 @@
-"""TLS-pinned LAN bridge for the Alex Android companion."""
+"""TLS-pinned LAN bridge, with an optional loopback Tailscale TCP ingress."""
 from __future__ import annotations
 
 import base64
@@ -10,7 +10,7 @@ import ipaddress
 import json
 import logging
 from pathlib import Path
-from queue import Full, Queue
+from queue import Empty, Full, Queue
 import secrets
 import socket
 import ssl
@@ -24,6 +24,7 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 
 from .config import ROOT
+from .unlock import UnlockGate
 
 
 @dataclass
@@ -37,6 +38,21 @@ class MobileJob:
     sample_rate: int = 0
     error: str = ''
     abandoned: threading.Event = field(default_factory=threading.Event)
+    # Streaming phones receive each rendered sentence as soon as it is ready.
+    events: Queue | None = None
+
+    def set_transcript(self, text: str) -> None:
+        self.transcript = text
+        if self.events is not None and text:
+            self.events.put({'transcript': text})
+
+    def add_audio(self, sample_rate: int, pcm: bytes) -> None:
+        if not self.sample_rate:
+            self.sample_rate = sample_rate
+        self.audio.extend(pcm)
+        if self.events is not None and pcm:
+            self.events.put({'sample_rate': sample_rate,
+                             'audio': base64.b64encode(pcm).decode('ascii')})
 
 
 def _certificate(directory: Path) -> tuple[Path, Path, str]:
@@ -126,7 +142,8 @@ class _PhoneHTTPServer(ThreadingHTTPServer):
 
 class MobileBridge:
     def __init__(self, jobs: Queue[MobileJob], port: int = 8768,
-                 bind_host: str = '0.0.0.0', allowed_client_ip: str | None = None) -> None:
+                 bind_host: str = '0.0.0.0', allowed_client_ip: str | None = None,
+                 remote_proxy_port: int | None = None) -> None:
         self.jobs = jobs
         self.port = port
         self.bind_host = socket.gethostbyname(socket.gethostname()) if bind_host == 'auto' else bind_host
@@ -139,8 +156,12 @@ class MobileBridge:
         self._code = ''
         self._code_until = 0.0
         self._lock = threading.Lock()
+        self.unlock = UnlockGate()
         self.server: ThreadingHTTPServer | None = None
         self.thread: threading.Thread | None = None
+        self.remote_proxy_port = remote_proxy_port
+        self.proxy_server: ThreadingHTTPServer | None = None
+        self.proxy_thread: threading.Thread | None = None
 
     def pairing_link(self) -> str:
         with self._lock:
@@ -149,9 +170,19 @@ class MobileBridge:
             code = self._code
         host = (socket.gethostbyname(socket.gethostname()) if self.bind_host == '0.0.0.0'
                 else self.bind_host)
-        if not ipaddress.ip_address(host).is_private:
+        remote_host = self.remote_host() if self.proxy_server else ''
+        if remote_host:
+            host = remote_host
+        if not ipaddress.ip_address(host).is_private and not remote_host:
             raise RuntimeError('Máy tính cần địa chỉ Wi-Fi nội bộ để ghép nối.')
         return f'alexphone://pair?host={host}&port={self.port}&fp={self.fingerprint}&code={code}'
+
+    def remote_host(self) -> str:
+        try:
+            address = ipaddress.IPv4Address((self.data_dir / 'phone-remote-host.txt').read_text(encoding='ascii').strip())
+            return str(address) if address in ipaddress.IPv4Network('100.64.0.0/10') else ''
+        except (OSError, ValueError):
+            return ''
 
     def pair(self, code: str) -> str | None:
         with self._lock:
@@ -174,14 +205,28 @@ class MobileBridge:
             return False
 
     def revoke(self) -> None:
+        self.unlock.revoke()
         self.token_hash_path.unlink(missing_ok=True)
+
+    def client_allowed(self, address: str, *, proxy: bool = False) -> bool:
+        try:
+            client = ipaddress.ip_address(address)
+        except ValueError:
+            return False
+        if proxy:
+            # Only the separate localhost ingress is forwarded by Tailscale Serve.
+            # Keep end-to-end TLS and pairing authentication; trust no HTTP headers.
+            return client.is_loopback and bool(self.remote_host())
+        return client.is_private and (
+            not self.allowed_client_ip or str(client) == self.allowed_client_ip)
 
     def start(self) -> None:
         bridge = self
 
         class Handler(BaseHTTPRequestHandler):
             def log_message(self, fmt: str, *args: object) -> None:
-                logging.info('Phone bridge: ' + fmt, *args)
+                # Do not log untrusted URLs, authentication headers or request bodies.
+                logging.debug('Phone bridge HTTP response')
 
             def _json(self, status: int, payload: dict) -> None:
                 body = json.dumps(payload, ensure_ascii=False).encode('utf-8')
@@ -191,15 +236,17 @@ class MobileBridge:
                 self.send_header('Cache-Control', 'no-store')
                 self.end_headers()
                 self.wfile.write(body)
+                self.wfile.flush()
 
             def do_POST(self) -> None:
                 try:
-                    client = ipaddress.ip_address(self.client_address[0])
-                    if not client.is_private:
-                        return self._json(403, {'error': 'Chỉ mạng nội bộ.'})
-                    if bridge.allowed_client_ip and str(client) != bridge.allowed_client_ip:
+                    request_started_at = time.monotonic()
+                    if not bridge.client_allowed(self.client_address[0],
+                            proxy=self.server is bridge.proxy_server):
                         return self._json(403, {'error': 'Điện thoại này không được phép kết nối.'})
                     length = int(self.headers.get('Content-Length', '-1'))
+                    if self.path.startswith('/unlock/'):
+                        return self._unlock(length)
                     if self.path == '/pair':
                         if length < 1 or length > 1024:
                             return self._json(403, {'error': 'Ghép nối khi PC đang mở khóa.'})
@@ -215,7 +262,7 @@ class MobileBridge:
                         if not bridge.authorized(token):
                             return self._json(401, {'error': 'Điện thoại chưa ghép nối.'})
                         return self._json(200, {'status': 'ready'})
-                    if self.path != '/turn':
+                    if self.path not in ('/turn', '/turn-stream'):
                         return self._json(404, {'error': 'Không có chức năng này.'})
                     if length < 0 or length > 640000:
                         return self._json(400, {'error': 'Âm thanh phải là PCM16 16 kHz, tối đa 20 giây.'})
@@ -230,11 +277,16 @@ class MobileBridge:
                     if length < 3200 or length > 640000 or length % 2:
                         return self._json(400, {'error': 'Âm thanh phải là PCM16 16 kHz, tối đa 20 giây.'})
                     samples = np.frombuffer(pcm, dtype='<i2').astype(np.float32) / 32768
-                    job = MobileJob(samples)
+                    job = MobileJob(samples, received_at=request_started_at)
+                    streaming = self.path == '/turn-stream'
+                    if streaming:
+                        job.events = Queue()
                     try:
                         bridge.jobs.put_nowait(job)
                     except Full:
                         return self._json(429, {'error': 'Alex đang bận, thử lại sau.'})
+                    if streaming:
+                        return self._stream(job)
                     if not job.done.wait(240):
                         job.abandoned.set()
                         return self._json(504, {'error': 'Alex xử lý quá lâu. Kiểm tra Bionic trên PC trước khi hỏi lại.'})
@@ -244,11 +296,87 @@ class MobileBridge:
                         'sample_rate': job.sample_rate,
                         'audio': base64.b64encode(job.audio).decode('ascii')})
                 except Exception:
-                    logging.exception('Phone request failed')
+                    logging.error('Phone request failed')
                     try:
                         self._json(500, {'error': 'Kết nối Alex gặp lỗi; xem nhật ký PC.'})
                     except OSError:
                         pass
+
+            def _stream(self, job: MobileJob) -> None:
+                """Send NDJSON events: transcript, one audio chunk per sentence, then the final reply."""
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/x-ndjson; charset=utf-8')
+                self.send_header('Cache-Control', 'no-store')
+                self.send_header('Connection', 'close')
+                self.end_headers()
+                self.close_connection = True
+
+                def send(event: dict) -> None:
+                    self.wfile.write(json.dumps(event, ensure_ascii=False).encode('utf-8') + b'\n')
+                    self.wfile.flush()
+
+                deadline = time.monotonic() + 240
+                try:
+                    while True:
+                        try:
+                            send(job.events.get(timeout=0.1))
+                            continue
+                        except Empty:
+                            pass
+                        if job.done.is_set() and job.events.empty():
+                            break
+                        if time.monotonic() > deadline:
+                            job.abandoned.set()
+                            send({'error': 'Alex xử lý quá lâu. Kiểm tra Alex trên PC trước khi hỏi lại.'})
+                            return
+                    if job.error:
+                        send({'error': job.error})
+                    else:
+                        send({'done': True, 'transcript': job.transcript, 'reply': job.reply})
+                except OSError:
+                    # Phone left mid-answer; stop wasting work on it.
+                    job.abandoned.set()
+
+            def _unlock(self, length: int) -> None:
+                pin = bytearray()
+                try:
+                    # Drain only a tiny bounded body before an error response, avoiding a
+                    # TCP reset that would hide the status from Android. Never interpret
+                    # its contents or reach the backend until authentication succeeds.
+                    if 0 <= length <= 1024 and not self.headers.get('Transfer-Encoding'):
+                        pin = bytearray(length)
+                        offset = 0
+                        while offset < length:
+                            n = self.rfile.readinto(memoryview(pin)[offset:])
+                            if not n:
+                                return self._json(400, {'status': 'invalid_request'})
+                            offset += n
+                    token = self.headers.get('Authorization', '').removeprefix('Bearer ')
+                    if not bridge.authorized(token):
+                        return self._json(401, {'status': 'not_paired'})
+                    if self.headers.get('Transfer-Encoding'):
+                        return self._json(400, {'status': 'invalid_request'})
+                    if self.path in ('/unlock/status', '/unlock/challenge'):
+                        if length != 0:
+                            return self._json(400, {'status': 'invalid_request'})
+                        data = bridge.unlock.status() if self.path.endswith('/status') else bridge.unlock.challenge(token)
+                        return self._json(200, data)
+                    if self.path != '/unlock/submit' or not 4 <= length <= 20:
+                        return self._json(400, {'status': 'invalid_request'})
+                    if self.headers.get('Content-Type') != 'application/octet-stream':
+                        return self._json(400, {'status': 'invalid_request'})
+                    nonce = self.headers.get('X-Alex-Unlock-Challenge', '')
+                    if len(nonce) != 32 or any(c not in '0123456789abcdef' for c in nonce):
+                        return self._json(400, {'status': 'expired_challenge'})
+                    return self._json(200, bridge.unlock.submit(token, nonce, pin))
+                except Exception:
+                    # No exception payload/traceback from the credential path.
+                    try:
+                        self._json(500, {'status': 'unknown_result'})
+                    except OSError:
+                        pass
+                finally:
+                    pin[:] = b'\0' * len(pin)
 
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         context.minimum_version = ssl.TLSVersion.TLSv1_2
@@ -257,8 +385,24 @@ class MobileBridge:
         self.thread = threading.Thread(target=self.server.serve_forever, name='Alex-phone-HTTPS', daemon=True)
         self.thread.start()
         logging.info('Phone bridge ready: TLS port %d', self.port)
+        if self.remote_proxy_port is not None:
+            try:
+                self.proxy_server = _PhoneHTTPServer(('127.0.0.1', self.remote_proxy_port), Handler, context)
+                self.proxy_thread = threading.Thread(target=self.proxy_server.serve_forever,
+                    name='Alex-phone-private-ingress', daemon=True)
+                self.proxy_thread.start()
+                logging.info('Phone private ingress ready on localhost port %d',
+                             self.proxy_server.server_address[1])
+            except OSError:
+                self.proxy_server = None
+                logging.warning('Phone private ingress unavailable; LAN remains active')
 
     def close(self) -> None:
-        if self.server:
-            self.server.shutdown()
-            self.server.server_close()
+        for server in (self.proxy_server, self.server):
+            if server:
+                server.shutdown()
+                server.server_close()
+        for thread in (self.proxy_thread, self.thread):
+            if thread:
+                thread.join(timeout=2)
+        self.proxy_server = self.server = None

@@ -23,7 +23,9 @@ class Segmenter:
         self.reset()
 
     def reset(self) -> None:
-        self.preroll: deque[bytes] = deque(maxlen=10)
+        # Keep a little more audio before VAD confirms speech. Soft initial
+        # syllables may otherwise be cut off before the recognizer sees them.
+        self.preroll: deque[bytes] = deque(maxlen=15)
         self.frames: list[bytes] = []
         self.onsets: deque[bool] = deque(maxlen=5)
         self.speech_count = 0

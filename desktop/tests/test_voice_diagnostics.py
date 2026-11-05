@@ -60,6 +60,16 @@ class VoiceDiagnosticsTests(unittest.TestCase):
         text, _ = stt.transcribe(np.full(25600, .03, dtype=np.float32))
         self.assertEqual(text, raw)
 
+    def test_window_vocabulary_hint_keeps_config_and_silence_rejection(self):
+        config = {'stt': {'initial_prompt': 'Tiếng Việt.', 'beam_size': 5}}
+        result = recognition_config(config)
+        self.assertIn('phóng to, thu nhỏ', result['initial_prompt'])
+        self.assertEqual(config['stt']['initial_prompt'], 'Tiếng Việt.')
+        self.assertEqual(recognition_config({'stt': result})['initial_prompt'], result['initial_prompt'])
+        stt, model = self.recognizer('Thu nhỏ')
+        self.assertEqual(stt.transcribe(np.zeros(32000, dtype=np.float32))[0], '')
+        model.transcribe.assert_not_called()
+
     def test_long_repetition_rejected_but_normal_emphasis_kept(self):
         self.assertFalse(excessive_repetition('Không không, tôi muốn mở ứng dụng khác.'))
         stt, _ = self.recognizer('xin chào bạn ' * 6)

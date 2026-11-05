@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android" package="vn.alex.phone"
-    android:versionCode="19" android:versionName="1.7">
+    android:versionCode="23" android:versionName="1.8.1">
     <uses-feature android:name="android.hardware.bluetooth" android:required="false" />
     <uses-feature android:name="android.hardware.microphone" android:required="false" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
@@ -17,10 +17,11 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <uses-permission android:name="android.permission.ACCESS_NOTIFICATION_POLICY" />
-    <queries><package android:name="com.zing.zalo" /></queries>
+    <queries><package android:name="com.zing.zalo" /><package android:name="com.carriez.flutter_hbb" /></queries>
     <application android:label="Alex" android:icon="@drawable/ic_alex" android:roundIcon="@drawable/ic_alex"
         android:theme="@android:style/Theme.Material.Light.NoActionBar"
         android:usesCleartextTraffic="false" android:allowBackup="false">
+        <activity android:name=".DirectUnlockActivity" android:exported="false" android:screenOrientation="portrait" />
         <activity android:name=".AlertActivity" android:exported="false" android:screenOrientation="portrait" />
         <receiver android:name=".AlertSmsReceiver" android:exported="false" />
         <receiver android:name=".AlertCancelReceiver" android:exported="false" />

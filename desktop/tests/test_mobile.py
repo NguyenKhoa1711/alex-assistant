@@ -82,7 +82,7 @@ class MobileBridgeTests(unittest.TestCase):
     def test_other_phone_ip_cannot_pair(self) -> None:
         with tempfile.TemporaryDirectory() as directory, patch.object(mobile, 'ROOT', mobile.Path(directory)):
             bridge = mobile.MobileBridge(Queue(), 0, bind_host='127.0.0.1',
-                                         allowed_client_ip='192.168.1.151')
+                                         allowed_client_ip='192.168.42.151')
             bridge.start()
             try:
                 self.assertEqual(bridge.server.server_address[0], '127.0.0.1')

@@ -54,7 +54,8 @@ public final class MainActivity extends Activity {
     private HidKeyboard keyboard;
     private BluetoothDevice chosenPc;
     private String verifiedPin;
-    private AudioRecord recorder;
+    private final ExecutorService voiceWorker = Executors.newSingleThreadExecutor();
+    private volatile VoiceCapture capture;
     private volatile boolean recording;
     private volatile boolean processingVoice;
     private volatile boolean visible;
@@ -63,7 +64,7 @@ public final class MainActivity extends Activity {
     private TextView connectionStatus, bluetoothSetupStatus;
     private TextView voiceBadge, bluetoothBadge, voiceTab, unlockTab, setupTab, alertTab;
     private EditText pairLink, windowsPin;
-    private Button recordButton;
+    private TalkButton recordButton;
     private LinearLayout voicePanel, unlockPanel, setupPanel, voiceNotice;
     private ScrollView scroll;
     private int selectedTab;
@@ -121,8 +122,7 @@ public final class MainActivity extends Activity {
 
     @Override public void onPause() {
         visible = false;
-        recording = false;
-        if (recorder != null) try { recorder.stop(); } catch (Exception ignored) { }
+        cancelRecording(false);
         if (bluetoothReceiverRegistered) {
             unregisterReceiver(bluetoothChanges);
             bluetoothReceiverRegistered = false;
@@ -133,9 +133,10 @@ public final class MainActivity extends Activity {
 
     @Override public void onDestroy() {
         verifiedPin = null;
-        recording = false;
-        if (recorder != null) try { recorder.stop(); } catch (Exception ignored) { }
+        cancelRecording(false);
         worker.shutdownNow();
+        // Let an already queued capture enter its finally block and release the mic.
+        voiceWorker.shutdown();
         super.onDestroy();
     }
 
@@ -157,10 +158,10 @@ public final class MainActivity extends Activity {
         brand.addView(UiKit.text(this,"Alex",23,UiKit.INK,true));
         brand.addView(UiKit.text(this,getString(R.string.ui_assistant),12,UiKit.MUTED,false),UiKit.space(this,-1,-2,3,0));
         header.addView(brand,new LinearLayout.LayoutParams(0,-2,1));
-        TextView version = UiKit.text(this,"1.7",12,UiKit.PRIMARY_DARK,true);
+        TextView version = UiKit.text(this,"1.8.1 · 23",12,UiKit.PRIMARY_DARK,true);
         version.setPadding(dp(10),dp(7),dp(10),dp(7));
         version.setBackground(UiKit.shape(UiKit.PALE,12,this));
-        version.setContentDescription("Alex phiên bản 1.7"); header.addView(version);
+        version.setContentDescription("Alex phiên bản 1.8.1"); header.addView(version);
         root.addView(header);
 
         scroll = new ScrollView(this);
@@ -212,7 +213,18 @@ public final class MainActivity extends Activity {
         TextView hint = UiKit.text(this,getString(R.string.ui_voice_hint),13,UiKit.MUTED,false);
         hint.setGravity(Gravity.CENTER); card.addView(hint,UiKit.space(this,-1,-2,6,0));
         pet = new PetView(this); card.addView(pet,UiKit.space(this,-1,dp(142),6,0));
-        recordButton = UiKit.button(this,getString(R.string.ui_record),true,v -> toggleRecording());
+        recordButton = new TalkButton(this);
+        recordButton.setText(getString(R.string.ui_record));
+        recordButton.setAllCaps(false); recordButton.setTextSize(15);
+        recordButton.setTextColor(Color.WHITE);
+        recordButton.setBackground(UiKit.ripple(this,UiKit.PRIMARY,false));
+        recordButton.setPadding(dp(14),dp(10),dp(14),dp(10));
+        recordButton.setSoundEffectsEnabled(false);
+        recordButton.setListener(new TalkButton.Listener() {
+            public boolean begin() { return beginRecording(); }
+            public void release() { releaseRecording(); }
+            public void cancel() { cancelRecording(true); }
+        });
         recordButton.setCompoundDrawables(UiKit.icon(this,"mic",Color.WHITE,24),null,null,null);
         recordButton.setCompoundDrawablePadding(dp(12));
         recordButton.setMinimumHeight(dp(62)); card.addView(recordButton);
@@ -240,13 +252,19 @@ public final class MainActivity extends Activity {
     private LinearLayout buildUnlockPanel() {
         LinearLayout panel = UiKit.column(this);
         section(panel,R.string.ui_unlock_title,R.string.ui_unlock_hint);
-        LinearLayout device = UiKit.card(this); panel.addView(device,UiKit.space(this,-1,-2,0,16));
+        panel.addView(RemoteAccessPanel.create(this),UiKit.space(this,-1,-2,0,20));
+        LinearLayout nearby = UiKit.column(this);
+        button("Dùng Bluetooth khi ở gần laptop",panel,v -> nearby.setVisibility(
+            nearby.getVisibility()==View.VISIBLE ? View.GONE : View.VISIBLE));
+        panel.addView(nearby); nearby.setVisibility(View.GONE);
+        nearby.addView(UiKit.text(this,"Mở khóa gần laptop · Bluetooth",17,UiKit.INK,true),UiKit.space(this,-1,-2,12,12));
+        LinearLayout device = UiKit.card(this); nearby.addView(device,UiKit.space(this,-1,-2,0,16));
         device.addView(UiKit.text(this,getString(R.string.ui_device),11,UiKit.MUTED,true));
         pcName = UiKit.text(this,"Chưa chọn máy tính",17,UiKit.INK,true);
         pcName.setCompoundDrawables(UiKit.icon(this,"link",UiKit.PRIMARY,26),null,null,null);
         pcName.setCompoundDrawablePadding(dp(12)); device.addView(pcName,UiKit.space(this,-1,-2,14,14));
         button("Chọn máy tính",device,v -> choosePc());
-        LinearLayout card = UiKit.card(this); panel.addView(card);
+        LinearLayout card = UiKit.card(this); nearby.addView(card);
         card.addView(UiKit.text(this,getString(R.string.ui_pin),17,UiKit.INK,true));
         card.addView(UiKit.text(this,getString(R.string.ui_pin_hint),13,UiKit.MUTED,false),UiKit.space(this,-1,-2,6,16));
         windowsPin = new EditText(this); UiKit.field(windowsPin,"Nhập PIN của laptop");
@@ -300,7 +318,7 @@ public final class MainActivity extends Activity {
         button(getString(R.string.ui_bt_choose),bt,v -> choosePc());
         bluetoothSetupStatus=UiKit.text(this,"PIN chỉ dùng sau khi bạn xác nhận trên điện thoại.",13,UiKit.MUTED,false);
         bt.addView(bluetoothSetupStatus,UiKit.space(this,-1,-2,8,0));
-        TextView privacy=UiKit.text(this,"Alex 1.7 · Thông tin ghép nối lưu trên thiết bị. Không lưu PIN Windows.",12,UiKit.MUTED,false);
+        TextView privacy=UiKit.text(this,"Alex 1.8.1 · Thông tin ghép nối và ID laptop lưu trên thiết bị. Không lưu PIN Windows.",12,UiKit.MUTED,false);
         privacy.setGravity(Gravity.CENTER); panel.addView(privacy,UiKit.space(this,-1,-2,20,0));
         return panel;
     }
@@ -324,6 +342,7 @@ public final class MainActivity extends Activity {
     }
 
     private void showTab(int tab) {
+        if (selectedTab != tab) cancelRecording(false);
         selectedTab=tab;
         voicePanel.setVisibility(tab==0 ? View.VISIBLE : View.GONE);
         unlockPanel.setVisibility(tab==1 ? View.VISIBLE : View.GONE);
@@ -346,8 +365,8 @@ public final class MainActivity extends Activity {
     private void recordLabel(String text) {
         recordButton.setText(text);
         recordButton.setContentDescription(text);
-        recordButton.setEnabled(!text.startsWith("Đang"));
-        recordButton.setAlpha(text.startsWith("Đang") ? .65f : 1f);
+        recordButton.setEnabled(recording || !processingVoice);
+        recordButton.setAlpha(recordButton.isEnabled() ? 1f : .65f);
     }
 
     private void syncConnectionUi() {
@@ -471,84 +490,88 @@ public final class MainActivity extends Activity {
             if (chosenPc != null) keyboard.prepare(chosenPc);
         }
         syncConnectionUi();
+        for (int i=0; i<permissions.length; i++) {
+            if (Manifest.permission.RECORD_AUDIO.equals(permissions[i])) {
+                message(i < results.length && results[i] == PackageManager.PERMISSION_GRANTED
+                        ? "Đã có quyền mic. Giữ nút khi nói, nói xong thì thả tay."
+                        : "Chưa có quyền mic. Vào Cài đặt điện thoại → Alex mới → Quyền → Mic để cho phép.");
+            }
+        }
     }
 
-    private void toggleRecording() {
-        if (recording) {
-            recording = false;
-            if (recorder != null) try { recorder.stop(); } catch (Exception ignored) { }
-            recordLabel("Đang gửi câu hỏi…");
-            recordButton.setEnabled(false);
-            return;
-        }
-        if (processingVoice) return;
+    private boolean beginRecording() {
+        if (processingVoice || !visible) return false;
         if (!connection.isPaired()) {
-            message("Hãy ghép nối Alex trên PC trước.");
-            showTab(2);
-            return;
+            message("Hãy ghép nối Alex trên PC trước."); showTab(2); return false;
         }
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            askAudioPermission(); return;
+            message("Cho phép Alex mới dùng mic, sau đó giữ nút để nói lại nhé.");
+            askAudioPermission(); return false;
         }
-        int min = AudioRecord.getMinBufferSize(16000, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT);
-        if (min <= 0) { message("Không mở được mic điện thoại."); return; }
-        try {
-            recorder = new AudioRecord(MediaRecorder.AudioSource.VOICE_RECOGNITION, 16000,
-                    AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, Math.max(min, 4096));
-            if (recorder.getState() != AudioRecord.STATE_INITIALIZED) throw new IllegalStateException("Mic không sẵn sàng");
-            recorder.startRecording();
-        } catch (Exception error) {
-            if (recorder != null) { recorder.release(); recorder = null; }
-            message("Lỗi mic: " + error.getMessage());
-            return;
-        }
-        recording = true;
-        processingVoice = true;
+        final VoiceCapture input = new VoiceCapture();
+        try { input.start(); }
+        catch (Exception error) { message("Lỗi mic: " + readableError(error)); return false; }
+        capture = input; recording = true; processingVoice = true;
         pet.mode = 1; pet.invalidate();
-        recordLabel("Dừng và gửi");
-        message("Đang nghe bạn nói…");
-        worker.execute(() -> {
-            ByteArrayOutputStream audio = new ByteArrayOutputStream();
-            byte[] buffer = new byte[3200];
-            long deadline = System.currentTimeMillis() + 20000;
+        recordLabel("Thả để gửi"); message("Đang nghe bạn nói…");
+        voiceWorker.execute(() -> {
             try {
-                while (recording && System.currentTimeMillis() < deadline) {
-                    int n = recorder.read(buffer, 0, buffer.length);
-                    if (n > 0) audio.write(buffer, 0, Math.min(n, 640000 - audio.size()));
-                    if (audio.size() >= 640000) break;
-                }
-            } catch (Exception error) { message("Thu âm lỗi: " + error.getMessage()); }
-            finally {
-                recording = false;
-                try { recorder.stop(); } catch (Exception ignored) { }
-                recorder.release(); recorder = null;
+                byte[] audio = input.read();
                 runOnUiThread(() -> {
-                    pet.mode = 2; pet.invalidate();
-                    recordLabel("Đang xử lý…");
+                    recording = false; recordButton.resetGesture();
+                    if (visible && !input.cancelled()) {
+                        pet.mode = 2; pet.invalidate(); recordLabel("Đang xử lý…");
+                    }
+                });
+                if (!visible || input.cancelled()) return;
+                if (audio.length < 3200) {
+                    voiceMessage(input,"Bạn nói quá ngắn. Giữ nút khi nói, nói xong thì thả tay nhé.");
+                    return;
+                }
+                // Keep the original /turn request, complete reply, and playback.
+                AlexConnection.Turn turn = connection.sendVoice(audio);
+                if (!visible || input.cancelled()) return;
+                runOnUiThread(() -> { if (visible && !input.cancelled()) showTurn(turn); });
+                if (turn.transcript.trim().isEmpty()) {
+                    voiceMessage(input,"Alex chưa nghe rõ câu nói. Hãy nói gần mic hơn rồi thử lại.");
+                } else {
+                    if (turn.audio.length > 0) play(turn.audio, turn.sampleRate, input);
+                    voiceMessage(input,"Alex đã trả lời.");
+                }
+            } catch (Exception error) {
+                voiceMessage(input,"Alex chưa trả lời: " + readableError(error));
+            } finally {
+                runOnUiThread(() -> {
+                    if (capture == input) capture = null;
+                    recording = false; processingVoice = false;
+                    if (!isFinishing()) {
+                        pet.mode = 0; pet.invalidate(); recordButton.resetGesture();
+                        recordLabel(getString(R.string.ui_record));
+                    }
                 });
             }
-            if (!visible) {
-                message("Đã dừng mic khi rời ứng dụng.");
-            } else if (audio.size() < 3200) {
-                message("Bạn nói quá ngắn, hãy thử lại.");
-            } else {
-                try {
-                    AlexConnection.Turn turn = connection.sendVoice(audio.toByteArray());
-                    runOnUiThread(() -> showTurn(turn));
-                    if (turn.transcript.trim().isEmpty()) {
-                        message("Alex chưa nghe rõ câu nói. Hãy nói gần mic hơn rồi thử lại.");
-                    } else {
-                        if (turn.audio.length > 0) play(turn.audio, turn.sampleRate);
-                        message("Alex đã trả lời.");
-                    }
-                } catch (Exception error) { message("Alex chưa trả lời: " + readableError(error)); }
-            }
-            runOnUiThread(() -> {
-                pet.mode = 0; pet.invalidate(); recordLabel("Bắt đầu nói");
-                recordButton.setEnabled(true);
-            });
-            processingVoice = false;
         });
+        return true;
+    }
+
+    private void releaseRecording() {
+        if (!recording) return;
+        recording = false;
+        VoiceCapture input = capture; if (input != null) input.release();
+        recordLabel("Đang gửi câu hỏi…");
+    }
+
+    private void cancelRecording(boolean notify) {
+        VoiceCapture input = capture; if (input != null) input.cancel();
+        recording = false;
+        if (recordButton != null) {
+            recordButton.resetGesture(); recordLabel(getString(R.string.ui_record));
+        }
+        if (notify) message("Đã hủy thu âm. Giữ nút để nói lại.");
+    }
+
+    private void voiceMessage(VoiceCapture input, String text) {
+        runOnUiThread(() -> { if (visible && !input.cancelled() && !isFinishing()) status.setText(text); });
     }
 
     private String readableError(Exception error) {
@@ -568,7 +591,7 @@ public final class MainActivity extends Activity {
         showTab(0);
     }
 
-    private void play(byte[] audio, int rate) {
+    private void play(byte[] audio, int rate, VoiceCapture input) {
         if (rate < 8000 || rate > 48000) return;
         int minimum = AudioTrack.getMinBufferSize(rate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT);
         if (minimum <= 0) return;
@@ -576,15 +599,15 @@ public final class MainActivity extends Activity {
                 AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT,
                 Math.max(minimum, 8192), AudioTrack.MODE_STREAM);
         try {
-            runOnUiThread(() -> { pet.mode = 3; pet.invalidate(); });
+            runOnUiThread(() -> { if (visible && !input.cancelled()) { pet.mode = 3; pet.invalidate(); } });
             track.play();
-            for (int offset = 0; offset < audio.length;) {
+            for (int offset = 0; offset < audio.length && visible && !input.cancelled();) {
                 int n = track.write(audio, offset, Math.min(8192, audio.length - offset));
                 if (n <= 0) break;
                 offset += n;
             }
             long deadline = System.currentTimeMillis() + Math.min((long) audio.length * 1000 / (rate * 2) + 5000, 90000);
-            while (track.getPlaybackHeadPosition() < audio.length / 2 && System.currentTimeMillis() < deadline)
+            while (visible && !input.cancelled() && track.getPlaybackHeadPosition() < audio.length / 2 && System.currentTimeMillis() < deadline)
                 Thread.sleep(25);
         } catch (Exception ignored) { }
         finally { track.stop(); track.release(); }

@@ -17,7 +17,7 @@ class IncompleteOpenTests(unittest.TestCase):
         cfg['privacy']['save_transcripts'] = False
         cfg['learning']['enabled'] = False
         engine = Controller(cfg)
-        engine.chat = MagicMock()
+        engine.chat = engine.gemini_chat = MagicMock()
         engine.chat.check_ready.side_effect = AssertionError('Bionic must not be contacted')
         engine.chat.stream.side_effect = AssertionError('Bionic must not be contacted')
         engine.speaker = MagicMock()

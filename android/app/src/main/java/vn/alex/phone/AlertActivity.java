@@ -271,7 +271,7 @@ public final class AlertActivity extends Activity {
                 .setNegativeButton("Chưa bật", null).setPositiveButton("Mở cài đặt", (a,b) -> startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))).show()), UiKit.space(this,-1,-2,8,0));
         if (Build.VERSION.SDK_INT >= 33) content.addView(UiKit.button(this, "Cho phép thông báo tiến trình", false,
                 v -> requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 71)),UiKit.space(this,-1,-2,8,0));
-        addText(content, "Cấp 2 — Zalo cho người thân 1:\n" + AlertPlan.CALL + "\n\nCấp 3 — Zalo và SMS cho cả hai:\n" + AlertPlan.SOS, 14, UiKit.INK);
+        addText(content, "Cấp 2 — Zalo cho Đại ca:\n" + AlertPlan.CALL + "\n\nCấp 3 — Zalo và SMS cho cả hai:\n" + AlertPlan.SOS, 14, UiKit.INK);
         AlertDialog dialog = new AlertDialog.Builder(this).setTitle("Thiết lập cảnh báo").setView(scroll)
                 .setNegativeButton("Đóng", null).setPositiveButton("Lưu", null).create();
         dialog.setOnShowListener(d -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {

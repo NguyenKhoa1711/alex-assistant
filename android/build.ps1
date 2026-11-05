@@ -1,70 +1,69 @@
-﻿param([string]$AsciiRoot = '', [string]$AndroidJar = '')
-
-$ErrorActionPreference = 'Stop'
-$createdLink = $false
-if (-not $AsciiRoot) {
-    $AsciiRoot = Join-Path $env:TEMP "alex-android-build-$PID"
-    New-Item -ItemType Junction -Path $AsciiRoot -Target $PSScriptRoot | Out-Null
-    $createdLink = $true
+param(
+    [string]$JdkRoot,
+    [string]$BuildTools,
+    [string]$AndroidJar,
+    [string]$SigningKey,
+    [string]$ApplicationId='vn.alex.phone.refresh',
+    [string]$AppLabel='Alex 1.8.2',
+    [string]$OutputName='Alex-moi-v1.8.2-fix-mic-23.apk'
+)
+$ErrorActionPreference='Stop'
+if(-not(Test-Path -LiteralPath $SigningKey -PathType Leaf)){throw 'Missing signing key; this build never generates/replaces signing keys.'}
+foreach($file in @("$JdkRoot\bin\javac.exe","$BuildTools\aapt2.exe","$BuildTools\d8.bat","$BuildTools\apksigner.bat",$AndroidJar)){
+    if(-not(Test-Path -LiteralPath $file -PathType Leaf)){throw "Missing build dependency: $file"}
 }
+if($ApplicationId -notmatch '^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$' -or $OutputName -notmatch '^[a-zA-Z0-9._-]+\.apk$'){throw 'Invalid package or output name'}
+$buildRoot=Join-Path ([IO.Path]::GetTempPath()) ('alex-apk-'+[guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $buildRoot -Force | Out-Null
 try {
-    $root = (Resolve-Path -LiteralPath $AsciiRoot).Path
-    if (-not (Test-Path -LiteralPath "$root\app\src\main\AndroidManifest.xml")) {
-        throw 'Đường dẫn ASCII không trỏ tới dự án Alex Android.'
+    # Real ASCII copy: javac and batch SDK tools can fail on Vietnamese paths.
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'app') -Destination (Join-Path $buildRoot 'app') -Recurse
+    Copy-Item -LiteralPath $AndroidJar -Destination (Join-Path $buildRoot 'android.jar')
+    Copy-Item -LiteralPath $SigningKey -Destination (Join-Path $buildRoot 'signing.keystore')
+    Copy-Item -LiteralPath "$BuildTools\lib\d8.jar" -Destination "$buildRoot\d8.jar"
+    Copy-Item -LiteralPath "$BuildTools\lib\apksigner.jar" -Destination "$buildRoot\apksigner.jar"
+    New-Item -ItemType Directory -Path "$buildRoot\generated","$buildRoot\classes","$buildRoot\dex" | Out-Null
+    [xml]$manifest=Get-Content -LiteralPath "$buildRoot\app\src\main\AndroidManifest.xml" -Raw -Encoding UTF8
+    $ns='http://schemas.android.com/apk/res/android'
+    $original=$manifest.manifest.package
+    $manager=[Xml.XmlNamespaceManager]::new($manifest.NameTable)
+    $manager.AddNamespace('android',$ns)
+    foreach($node in $manifest.SelectNodes('//*[@android:name]',$manager)){
+        $name=$node.GetAttribute('name',$ns)
+        if($name.StartsWith('.')){[void]$node.SetAttribute('name',$ns,$original+$name)}
     }
-    $jdk = (Get-ChildItem -LiteralPath "$root\toolchain\jdk" -Directory | Select-Object -First 1).FullName
-    $sdk = "$root\toolchain\sdk"
-    $buildTools = "$sdk\build-tools\35.0.0"
-    if (-not $AndroidJar) { $AndroidJar = "$sdk\platforms\android-35\android.jar" }
-    $zxingJar = "$root\app\libs\core-3.5.4.jar"
-    $env:JAVA_HOME = $jdk
-    $env:ANDROID_HOME = $sdk
-    New-Item -ItemType Directory -Force -Path "$root\build\classes", "$root\build\dex", "$root\dist" | Out-Null
-
-    New-Item -ItemType Directory -Force -Path "$root\build\generated" | Out-Null
-    & "$buildTools\aapt2.exe" compile --dir "$root\app\src\main\res" -o "$root\build\compiled-res.zip"
-    if ($LASTEXITCODE -ne 0) { throw 'aapt2 compile thất bại.' }
-    & "$buildTools\aapt2.exe" link -o "$root\build\resources.apk" --manifest "$root\app\src\main\AndroidManifest.xml" -I $androidJar --min-sdk-version 28 --target-sdk-version 35 "$root\build\compiled-res.zip" --java "$root\build\generated"
-    if ($LASTEXITCODE -ne 0) { throw 'aapt2 link thất bại.' }
-    $sources = Get-ChildItem -LiteralPath "$root\app\src\main\java" -Recurse -Filter '*.java' | ForEach-Object FullName
-    & "$jdk\bin\javac.exe" -encoding UTF-8 --release 8 -classpath "$androidJar;$zxingJar" -d "$root\build\classes" $sources "$root\build\generated\vn\alex\phone\R.java"
-    if ($LASTEXITCODE -ne 0) { throw 'javac biên dịch thất bại.' }
-    $classes = Get-ChildItem -LiteralPath "$root\build\classes" -Recurse -Filter '*.class' | ForEach-Object FullName
-    & "$buildTools\d8.bat" --lib $androidJar --min-api 28 --output "$root\build\dex" $classes $zxingJar
-    if ($LASTEXITCODE -ne 0) { throw 'D8 biên dịch thất bại.' }
-
-    $pack = @'
-import pathlib,sys,zipfile
-resources,dex,output=map(pathlib.Path,sys.argv[1:])
-with zipfile.ZipFile(resources) as source,zipfile.ZipFile(output,'w') as target:
-    for item in source.infolist():
-        target.writestr(item,source.read(item.filename))
-    target.write(dex,'classes.dex',compress_type=zipfile.ZIP_DEFLATED)
-'@
-    & py -3 -c $pack "$root\build\resources.apk" "$root\build\dex\classes.dex" "$root\build\unsigned.apk"
-    if ($LASTEXITCODE -ne 0) { throw 'Không ghép được classes.dex.' }
-    & "$buildTools\zipalign.exe" -f 4 "$root\build\unsigned.apk" "$root\build\aligned.apk"
-    if ($LASTEXITCODE -ne 0) { throw 'zipalign thất bại.' }
-    $key = "$root\dist\alex-debug.keystore"
-    if (-not (Test-Path -LiteralPath $key)) {
-        if (Get-ChildItem -LiteralPath "$root\dist" -Filter 'Alex-Android*.apk' -File | Select-Object -First 1) {
-            throw 'Thiếu khóa ký APK cũ. Không tạo khóa mới vì bản cập nhật sẽ không cài đè được và làm mất dữ liệu ghép nối.'
-        }
-        & "$jdk\bin\keytool.exe" -genkeypair -keystore $key -storepass android -keypass android -alias androiddebugkey -dname 'CN=Alex Android Debug,O=Alex,C=VN' -keyalg RSA -keysize 3072 -validity 3650
-        if ($LASTEXITCODE -ne 0) { throw 'Không tạo được khóa ký APK.' }
-    }
-    & "$buildTools\apksigner.bat" sign --ks $key --ks-key-alias androiddebugkey --ks-pass pass:android --key-pass pass:android --out "$root\dist\Alex-Android.apk" "$root\build\aligned.apk"
-    if ($LASTEXITCODE -ne 0) { throw 'Không ký được APK.' }
-    & "$buildTools\apksigner.bat" verify --verbose "$root\dist\Alex-Android.apk"
-    if ($LASTEXITCODE -ne 0) { throw 'APK không xác thực được chữ ký.' }
-    Write-Output "APK: $PSScriptRoot\dist\Alex-Android.apk"
+    $manifest.manifest.SetAttribute('package',$ApplicationId)
+    [void]$manifest.manifest.application.SetAttribute('label',$ns,$AppLabel)
+    $manifest.Save("$buildRoot\manifest.xml")
+    $env:JAVA_HOME=$JdkRoot
+    & "$BuildTools\aapt2.exe" compile --dir "$buildRoot\app\src\main\res" -o "$buildRoot\compiled-res.zip"
+    if($LASTEXITCODE){throw 'Resource compile failed'}
+    & "$BuildTools\aapt2.exe" link -o "$buildRoot\resources.apk" --manifest "$buildRoot\manifest.xml" -I "$buildRoot\android.jar" --min-sdk-version 28 --target-sdk-version 35 --custom-package vn.alex.phone "$buildRoot\compiled-res.zip" --java "$buildRoot\generated"
+    if($LASTEXITCODE){throw 'Resource link failed'}
+    $sources=Get-ChildItem -LiteralPath "$buildRoot\app\src\main\java","$buildRoot\generated" -Recurse -Filter '*.java' | ForEach-Object FullName
+    & "$JdkRoot\bin\javac.exe" -encoding UTF-8 --release 8 -classpath "$buildRoot\android.jar;$buildRoot\app\libs\core-3.5.4.jar" -d "$buildRoot\classes" $sources
+    if($LASTEXITCODE){throw 'Java compilation failed'}
+    $classes=Get-ChildItem -LiteralPath "$buildRoot\classes" -Recurse -Filter '*.class' | ForEach-Object FullName
+    & "$JdkRoot\bin\java.exe" -cp "$buildRoot\d8.jar" com.android.tools.r8.D8 --lib "$buildRoot\android.jar" --min-api 28 --output "$buildRoot\dex" $classes "$buildRoot\app\libs\core-3.5.4.jar"
+    if($LASTEXITCODE){throw 'DEX compilation failed'}
+    Copy-Item -LiteralPath "$buildRoot\resources.apk" -Destination "$buildRoot\unsigned.apk"
+    Add-Type -AssemblyName System.IO.Compression
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $zip=[IO.Compression.ZipFile]::Open("$buildRoot\unsigned.apk",[IO.Compression.ZipArchiveMode]::Update)
+    try {[IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip,"$buildRoot\dex\classes.dex",'classes.dex') | Out-Null} finally {$zip.Dispose()}
+    & "$BuildTools\zipalign.exe" -f 4 "$buildRoot\unsigned.apk" "$buildRoot\aligned.apk"
+    if($LASTEXITCODE){throw 'APK alignment failed'}
+    & "$JdkRoot\bin\java.exe" -jar "$buildRoot\apksigner.jar" sign --ks "$buildRoot\signing.keystore" --ks-key-alias androiddebugkey --ks-pass pass:android --key-pass pass:android --out "$buildRoot\signed.apk" "$buildRoot\aligned.apk"
+    if($LASTEXITCODE){throw 'APK signing failed'}
+    & "$JdkRoot\bin\java.exe" -jar "$buildRoot\apksigner.jar" verify --verbose --print-certs "$buildRoot\signed.apk"
+    if($LASTEXITCODE){throw 'Signature verification failed'}
+    New-Item -ItemType Directory -Path (Join-Path $PSScriptRoot 'dist') -Force | Out-Null
+    Copy-Item -LiteralPath "$buildRoot\signed.apk" -Destination (Join-Path $PSScriptRoot "dist\$OutputName") -Force
+    Write-Output (Join-Path $PSScriptRoot "dist\$OutputName")
 } finally {
-    if ($createdLink) {
-        $link = Get-Item -LiteralPath $AsciiRoot -Force -ErrorAction SilentlyContinue
-        if ($link -and $link.LinkType -eq 'Junction' -and
-            [IO.Path]::GetFullPath([string]$link.Target).TrimEnd('\') -eq
-            [IO.Path]::GetFullPath($PSScriptRoot).TrimEnd('\')) {
-            [IO.Directory]::Delete($AsciiRoot, $false)
-        }
+    $resolved=[IO.Path]::GetFullPath($buildRoot)
+    $temp=[IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\')+'\'
+    if($resolved.StartsWith($temp,[StringComparison]::OrdinalIgnoreCase) -and (Split-Path -Leaf $resolved) -match '^alex-apk-[a-f0-9]{32}$'){
+        Remove-Item -LiteralPath $resolved -Recurse -Force
     }
 }

@@ -7,7 +7,7 @@ import threading
 import time
 from .app_actions import ActionResult, folded
 from .apps import (requested_app, requested_system_app, requested_shortcut,
-                   requested_app_path, app_windows, _safe_shortcut_target)
+                   requested_app_path, requested_web, app_windows, _safe_shortcut_target)
 
 
 class Windows:
@@ -45,12 +45,56 @@ class Windows:
     def enabled(self, hwnd): return bool(self.user.IsWindowEnabled(hwnd))
     def post_close(self, hwnd): return bool(self.user.PostMessageW(hwnd,0x0010,0,0))
 
+    def topmost_user_window(self) -> int:
+        my_pid = os.getpid()
+        found: list[int] = []
+        callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+        @callback_type
+        def visit(hwnd: int, _: int) -> bool:
+            if not self.visible(hwnd) or not self.enabled(hwnd):
+                return True
+            title = ctypes.create_unicode_buffer(512)
+            self.user.GetWindowTextW(hwnd, title, len(title))
+            if not title.value.strip():
+                return True
+            ident = self.identity(hwnd)
+            if not ident:
+                return True
+            _, pid, exe_path, cls = ident
+            if pid == my_pid or cls in {
+                'Progman', 'WorkerW', 'Shell_TrayWnd', 'Shell_SecondaryTrayWnd',
+                '#32770', 'IME', 'MSCTFIME UI', 'tooltips_class32',
+                'Windows.UI.Core.CoreWindow',
+            }:
+                return True
+            exe_name = exe_path.rsplit('\\', 1)[-1]
+            if exe_name in {'bionic.exe', 'applicationframehost.exe', 'searchhost.exe', 'startmenuexperiencehost.exe', 'shellexperiencehost.exe', 'textinputhost.exe'}:
+                return True
+            found.append(int(hwnd))
+            return False
+
+        self.user.EnumWindows.argtypes = [callback_type, wintypes.LPARAM]
+        self.user.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+        self.user.EnumWindows(visit, 0)
+        return found[0] if found else 0
+
+
+_BROWSER_PROCESSES = ['chrome.exe', 'msedge.exe', 'firefox.exe', 'brave.exe', 'opera.exe', 'vivaldi.exe', 'browser.exe']
+
 
 def resolve_close_entry(name, cfg):
+    key = folded(name).strip(' .!?')
+    if key in {'trinh duyet', 'trang web', 'website', 'web', 'cua so web', 'trang'}:
+        return {'name': 'trình duyệt', 'processes': list(_BROWSER_PROCESSES)}
     command='Mở '+name
     entry=(requested_app(command,cfg.get('apps',{}).get('entries',[])) or
            requested_system_app(command) or requested_shortcut(command) or requested_app_path(command))
-    if not entry: return None
+    if not entry:
+        web_hit = requested_web(command, cfg.get('web', {}).get('sites', []))
+        if web_hit:
+            return {'name': web_hit[1], 'processes': list(_BROWSER_PROCESSES)}
+        return None
     entry=dict(entry)
     # Minecraft is launched through TLauncher, but closing them is not equivalent.
     if entry['name']=='TLauncher' and folded(name) not in {'tlauncher','tlaucher','t launcher'}:
@@ -72,6 +116,7 @@ def close_app_window(name: str, cfg: dict, cancelled: threading.Event,
         return ActionResult(message,verified,time.monotonic()-started)
     if cancelled.is_set(): return result('Đã dừng theo yêu cầu của bạn.')
     foreground=api.foreground()
+    used_fallback_window=False
     label='ứng dụng'
     if name:
         entry=resolve_close_entry(name,cfg)
@@ -80,10 +125,18 @@ def close_app_window(name: str, cfg: dict, cancelled: threading.Event,
         label=entry['name']
         handles=app_windows(entry)
         if foreground in handles: hwnd=foreground
-        elif len(handles)==1: hwnd=handles[0]
+        elif len(handles)==1 or label=='trình duyệt': hwnd=handles[0]
         elif not handles: return result(f'Mình chưa thấy cửa sổ {label} đang mở.')
-        else: return result(f'{label} có nhiều cửa sổ. Bạn chọn cửa sổ cần đóng rồi nói lại nhé.')
-    else: hwnd=foreground
+        else: return result(f'Có nhiều cửa sổ {label} đang mở. Bạn chọn cửa sổ cần đóng trước nhé.')
+    else:
+        hwnd=foreground
+        ident_fg=api.identity(hwnd)
+        if (not ident_fg or ident_fg[1]==os.getpid() or ident_fg[3] in {
+                'Progman','WorkerW','Shell_TrayWnd','Shell_SecondaryTrayWnd','#32770'}) and hasattr(api, 'topmost_user_window'):
+            fallback=api.topmost_user_window()
+            if fallback:
+                hwnd=fallback
+                used_fallback_window=True
     identity=api.identity(hwnd)
     if not identity or identity[1]==os.getpid() or identity[3] in {
             'Progman','WorkerW','Shell_TrayWnd','Shell_SecondaryTrayWnd','#32770'}:
@@ -91,7 +144,7 @@ def close_app_window(name: str, cfg: dict, cancelled: threading.Event,
     if not api.visible(hwnd) or not api.enabled(hwnd):
         return result('Cửa sổ chưa sẵn sàng hoặc đang có hộp thoại. Bạn xử lý trên màn hình trước nhé.')
     if cancelled.is_set(): return result('Đã dừng theo yêu cầu của bạn.')
-    if api.identity(hwnd)!=identity or (not name and api.foreground()!=foreground):
+    if api.identity(hwnd)!=identity or (not name and not used_fallback_window and api.foreground()!=foreground):
         return result('Cửa sổ đã thay đổi; mình chưa đóng gì.')
     if not api.post_close(hwnd):
         return result('Windows chưa cho đóng cửa sổ này; mình chưa đóng được.')

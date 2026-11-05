@@ -30,6 +30,11 @@ def special_tools() -> list[types.Tool]:
             'command': {'type': 'string', 'description': 'Exact current user command about laptop volume or brightness',
                         'minLength': 1, 'maxLength': 300}},
             'required': ['command'], 'additionalProperties': False}),
+        types.Tool(name='MusicControl', description='Search and auto-play music on Spotify or YouTube, or pause/stop/resume/skip currently playing music. Pass the exact original Vietnamese command unchanged, e.g. "tìm kiếm nhạc Lạc Trôi", "phát bài Thiên Lý Ơi trên YouTube", "dừng nhạc đang chạy", "mở nhạc", "chuyển bài tiếp theo". No UI Plan or shell is needed for this narrow tool. Report only its verified result.',
+        inputSchema={'type': 'object', 'properties': {
+            'command': {'type': 'string', 'description': 'Exact current user command about searching, playing, or stopping music',
+                        'minLength': 1, 'maxLength': 300}},
+            'required': ['command'], 'additionalProperties': False}),
         types.Tool(name='OpenLocal', description='For a direct user request to open one app, file or folder, ACTUALLY open it now. If an app name is not installed but matches a configured or known website, open that website in the default browser instead of suggesting installation. Never edit files. If multiple file matches, ask which one. Minecraft opens TLauncher and presses Enter the game for the selected version; TLauncher alone opens only the launcher.',
         inputSchema={'type': 'object', 'properties': {
             'name': {'type': 'string'}, 'kind': {'type': 'string',
@@ -135,10 +140,23 @@ def close_local(command: str, cfg: dict) -> dict:
             'verified':result.verified,'message':result.message}
 
 
+def music_control(command: str, cfg: dict) -> dict:
+    if not isinstance(command, str) or not 1 <= len(command.strip()) <= 300:
+        raise ValueError('Cần một câu lệnh tìm kiếm, phát hoặc dừng nhạc cụ thể.')
+    action = parse_action(command)
+    if action is None or action.app not in ('Spotify', 'YouTube') or action.operation not in ('play', 'pause', 'next', 'previous', 'song'):
+        raise ValueError('Chưa rõ lệnh nhạc. Ví dụ: "tìm nhạc Lạc Trôi", "phát bài Thiên Lý Ơi trên YouTube", hoặc "dừng nhạc đang chạy".')
+    if not cfg.get('actions', {}).get('enabled', True):
+        return {'verified': False, 'message': 'Thao tác ứng dụng đang tắt trong cấu hình.'}
+    result = AppActions(cfg).execute(action, threading.Event())
+    return {'app': action.app, 'operation': action.operation, 'query': action.query,
+            'verified': result.verified, 'message': result.message}
+
+
 async def main() -> None:
     cfg = load_config()
     parameters = StdioServerParameters(command=cfg['computer']['command'],
-        args=['serve', '--transport', 'stdio', '--tools', ','.join(BACKEND_TOOLS)],
+        args=[*cfg['computer'].get('command_args', []), 'serve', '--transport', 'stdio', '--tools', ','.join(BACKEND_TOOLS)],
         env={**os.environ, 'PYTHONIOENCODING': 'utf-8', 'ANONYMIZED_TELEMETRY': 'false', 'DO_NOT_TRACK': '1'})
     guard = DesktopGuard()
     guard.limit = min(80, max(1, int(cfg['computer'].get('max_steps', 40))))
@@ -163,6 +181,10 @@ async def main() -> None:
                                     text=json.dumps(value, ensure_ascii=False))], isError=not value['verified'])
                             if name == 'DeviceControl':
                                 value = await asyncio.to_thread(device_control, arguments['command'], cfg)
+                                return types.CallToolResult(content=[types.TextContent(type='text',
+                                    text=json.dumps(value, ensure_ascii=False))], isError=not value['verified'])
+                            if name == 'MusicControl':
+                                value = await asyncio.to_thread(music_control, arguments['command'], cfg)
                                 return types.CallToolResult(content=[types.TextContent(type='text',
                                     text=json.dumps(value, ensure_ascii=False))], isError=not value['verified'])
                             if name in ('FindLocal', 'OpenLocal'):
