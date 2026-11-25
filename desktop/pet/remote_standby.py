@@ -1,4 +1,4 @@
-"""Keep the paired PC reachable on AC without keeping its display on.
+"""Keep Alex's AC power requests scoped to the current Windows session.
 
 Power requests are process-owned and released on battery, unknown power state,
 or exit. They do not override Windows' explicit Sleep/lid/power-button actions.
@@ -32,6 +32,20 @@ class _ReasonContext(ctypes.Structure):
                 ('Reason', _ReasonUnion)]
 
 
+class _SessionHead(ctypes.Structure):
+    _fields_ = [('SessionId', wintypes.DWORD), ('SessionState', ctypes.c_int32),
+                ('SessionFlags', ctypes.c_int32)]
+
+
+class _SessionData(ctypes.Union):
+    # WTSINFOEX_LEVEL1 contains 64-bit times; the union is 8-byte aligned.
+    _fields_ = [('level1', _SessionHead), ('alignment', ctypes.c_int64)]
+
+
+class _SessionInfo(ctypes.Structure):
+    _fields_ = [('level', wintypes.DWORD), ('data', _SessionData)]
+
+
 class WindowsPowerRequest:
     def __init__(self) -> None:
         self.api = ctypes.WinDLL('kernel32', use_last_error=True)
@@ -52,16 +66,36 @@ class WindowsPowerRequest:
             raise ctypes.WinError(ctypes.get_last_error())
         return status.ACLineStatus == 1  # 255 (unknown) must never keep a battery awake.
 
-    def acquire(self) -> int:
+    def session_unlocked(self) -> bool:
+        """Accept only the active, explicitly unlocked current Windows session."""
+        wts = ctypes.WinDLL('wtsapi32', use_last_error=True)
+        query = wts.WTSQuerySessionInformationW
+        query.argtypes = (wintypes.HANDLE, wintypes.DWORD, ctypes.c_int,
+                          ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(wintypes.DWORD))
+        query.restype = wintypes.BOOL
+        wts.WTSFreeMemory.argtypes = (ctypes.c_void_p,)
+        data, size = ctypes.c_void_p(), wintypes.DWORD()
+        if not query(None, 0xffffffff, 25, ctypes.byref(data), ctypes.byref(size)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            if not data or size.value < ctypes.sizeof(_SessionInfo):
+                return False
+            info = ctypes.cast(data, ctypes.POINTER(_SessionInfo)).contents
+            # WTSActive == 0 and WTS_SESSIONSTATE_UNLOCK == 1 on Windows 10/11.
+            return info.level == 1 and info.data.level1.SessionState == 0 and info.data.level1.SessionFlags == 1
+        finally:
+            if data:
+                wts.WTSFreeMemory(data)
+
+    def _acquire(self, kinds: tuple[int, ...], reason_text: str) -> int:
         reason = _ReasonContext(0, 1, _ReasonUnion(
-            SimpleReasonString='Alex: cho mo khoa tu xa khi cam sac'))
+            SimpleReasonString=reason_text))
         handle = self.api.PowerCreateRequest(ctypes.byref(reason))
         if not handle or handle == ctypes.c_void_p(-1).value:
             raise ctypes.WinError(ctypes.get_last_error())
         applied = []
         try:
-            # SYSTEM + EXECUTION, deliberately no DISPLAY or AWAYMODE request.
-            for kind in (1, 3):
+            for kind in kinds:
                 if not self.api.PowerSetRequest(handle, kind):
                     raise ctypes.WinError(ctypes.get_last_error())
                 applied.append(kind)
@@ -72,6 +106,13 @@ class WindowsPowerRequest:
             self.api.CloseHandle(handle)
             raise
 
+    def acquire(self) -> int:
+        # The network request remains separate from the display request.
+        return self._acquire((1, 3), 'Alex: cho mo khoa tu xa khi cam sac')
+
+    def acquire_display(self) -> int:
+        return self._acquire((0,), 'Alex: giu man hinh sang khi cam sac va mo khoa')
+
     def release(self, handle: int) -> None:
         try:
             for kind in (3, 1):
@@ -79,12 +120,23 @@ class WindowsPowerRequest:
         finally:
             self.api.CloseHandle(handle)
 
+    def release_display(self, handle: int) -> None:
+        try:
+            self.api.PowerClearRequest(handle, 0)
+        finally:
+            self.api.CloseHandle(handle)
+
 
 class RemoteStandby:
-    def __init__(self, enabled: bool, backend=None) -> None:
+    def __init__(self, enabled: bool, backend=None, *, display_enabled: bool = False) -> None:
         self.enabled = enabled
+        self.display_enabled = display_enabled
         self.backend = backend if backend is not None else WindowsPowerRequest()
         self._handle = None
+        self._display_handle = None
+        self._display_suspended = False
+        self._saw_locked = False
+        self._session_failed = False
         self._lock = threading.RLock()
         self._stop = threading.Event()
         self._thread = None
@@ -101,16 +153,42 @@ class RemoteStandby:
                 # the lease after resume instead of trusting the old handle.
                 self._resume.clear()
                 self._release()
+                self._release_display()
             try:
-                needed = self.wants_remote_wait()
+                on_ac = (self.enabled or self.display_enabled) and not self._stop.is_set() and self.backend.on_ac()
             except OSError:
                 self._release()
+                self._release_display()
                 raise
+            needed = self.enabled and on_ac
             if needed and self._handle is None:
                 self._handle = self.backend.acquire()
                 logging.info('REMOTE_WAIT active on AC; display may turn off')
             elif not needed:
                 self._release()
+            unlocked = False
+            session_known = False
+            if self.display_enabled and on_ac:
+                try:
+                    unlocked = self.backend.session_unlocked()
+                    session_known = True
+                    self._session_failed = False
+                except OSError:
+                    if not self._session_failed:
+                        logging.warning('DISPLAY_AWAKE session state unavailable; request released')
+                    self._session_failed = True
+            if self._display_suspended:
+                if session_known and not unlocked:
+                    self._saw_locked = True
+                elif session_known and unlocked and self._saw_locked:
+                    self._display_suspended = False
+                    self._saw_locked = False
+            if self.display_enabled and on_ac and unlocked and not self._display_suspended:
+                if self._display_handle is None:
+                    self._display_handle = self.backend.acquire_display()
+                    logging.info('DISPLAY_AWAKE active on AC while session unlocked')
+            else:
+                self._release_display()
             return self._handle is not None
 
     def _release(self) -> None:
@@ -118,6 +196,29 @@ class RemoteStandby:
             handle, self._handle = self._handle, None
             self.backend.release(handle)
             logging.info('REMOTE_WAIT released; normal sleep policy applies')
+
+    def _release_display(self) -> None:
+        if self._display_handle is not None:
+            handle, self._display_handle = self._display_handle, None
+            self.backend.release_display(handle)
+            logging.info('DISPLAY_AWAKE released')
+
+    def prepare_lock(self) -> None:
+        with self._lock:
+            self._display_suspended = True
+            self._saw_locked = False
+            self._release_display()
+
+    def confirm_locked(self) -> None:
+        with self._lock:
+            if self._display_suspended:
+                self._saw_locked = True
+
+    def cancel_lock(self) -> None:
+        with self._lock:
+            self._display_suspended = False
+            self._saw_locked = False
+        self.update()
 
     def require_active(self) -> None:
         if not self.update():
@@ -127,7 +228,7 @@ class RemoteStandby:
         self._resume.set()
 
     def start(self) -> None:
-        if not self.enabled or self._thread is not None:
+        if not (self.enabled or self.display_enabled) or self._thread is not None:
             return
         self._thread = threading.Thread(target=self._run, name='Alex-remote-wait', daemon=True)
         try:
@@ -158,15 +259,16 @@ class RemoteStandby:
             self._thread.join(timeout=3)
         with self._lock:
             self._release()
+            self._release_display()
 
 
 _guard: RemoteStandby | None = None
 
 
-def start_remote_wait(enabled: bool) -> None:
+def start_remote_wait(enabled: bool, *, display_enabled: bool = False) -> None:
     global _guard
     stop_remote_wait()
-    _guard = RemoteStandby(enabled)
+    _guard = RemoteStandby(enabled, display_enabled=display_enabled)
     _guard.start()
 
 
@@ -190,6 +292,21 @@ def require_remote_wait() -> None:
     if _guard is None:
         raise OSError('Chế độ chờ mở khóa từ xa chưa bật.')
     _guard.require_active()
+
+
+def prepare_display_for_lock() -> None:
+    if _guard is not None:
+        _guard.prepare_lock()
+
+
+def confirm_display_locked() -> None:
+    if _guard is not None:
+        _guard.confirm_locked()
+
+
+def cancel_display_lock() -> None:
+    if _guard is not None:
+        _guard.cancel_lock()
 
 
 def notify_resume() -> None:

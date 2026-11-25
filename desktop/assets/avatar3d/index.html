@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'unsafe-inline'; img-src 'self' blob: data:; connect-src 'self' blob:; worker-src 'none'">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+html,body,#stage { margin:0; width:100%; height:100%; overflow:hidden; background:#01060d; user-select:none; }
+#stage {
+  position:relative;
+  background:
+    radial-gradient(circle at 50% 50%, rgba(0, 215, 255, 0.14) 0%, rgba(0, 95, 165, 0.06) 36%, rgba(2, 10, 20, 0.96) 72%, #01050b 100%);
+  font-family:'Segoe UI', 'Consolas', monospace;
+}
+#stage::before {
+  content:"";
+  position:absolute; inset:0;
+  background-image:
+    radial-gradient(circle at 50% 50%, transparent 0%, rgba(1, 6, 14, 0.85) 85%),
+    linear-gradient(rgba(0, 230, 255, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 230, 255, 0.035) 1px, transparent 1px);
+  background-size: 100% 100%, 32px 32px, 32px 32px;
+  pointer-events:none;
+}
+#stage::after {
+  content:"";
+  position:absolute; inset:0;
+  background: repeating-linear-gradient(
+    0deg,
+    rgba(0, 240, 255, 0.022) 0px,
+    rgba(0, 240, 255, 0.022) 1px,
+    transparent 1px,
+    transparent 3px
+  );
+  pointer-events:none;
+}
+.hud-overlay {
+  position:absolute; inset:14px;
+  z-index:2;
+  pointer-events:none;
+  border:1px solid rgba(0, 225, 255, 0.15);
+  border-radius:10px;
+  box-shadow: inset 0 0 45px rgba(0, 195, 255, 0.07);
+}
+.corner {
+  position:absolute; width:26px; height:26px;
+  border-color: #00f0ff;
+  border-style: solid;
+  filter: drop-shadow(0 0 6px rgba(0, 240, 255, 0.7));
+  transition: border-color 0.35s ease, filter 0.35s ease;
+}
+.corner.tl { top:6px; left:6px; border-width:2px 0 0 2px; border-top-left-radius:4px; }
+.corner.tr { top:6px; right:6px; border-width:2px 2px 0 0; border-top-right-radius:4px; }
+.corner.bl { bottom:6px; left:6px; border-width:0 0 2px 2px; border-bottom-left-radius:4px; }
+.corner.br { bottom:6px; right:6px; border-width:0 2px 2px 0; border-bottom-right-radius:4px; }
+
+.hud-top, .hud-bottom {
+  position:absolute; left:22px; right:22px;
+  display:flex; justify-content:space-between; align-items:center;
+  font-size:10.5px; letter-spacing:2px; text-transform:uppercase;
+  color:rgba(155, 240, 255, 0.82);
+  text-shadow: 0 0 10px rgba(0, 225, 255, 0.55);
+  pointer-events:none;
+}
+.hud-top { top:16px; }
+.hud-bottom { bottom:16px; }
+.hud-tag {
+  min-width:0;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+  padding:3px 10px;
+  border:1px solid rgba(0, 240, 255, 0.35);
+  background:linear-gradient(90deg, rgba(0, 65, 95, 0.55), rgba(0, 25, 45, 0.35));
+  border-radius:3px;
+  font-weight:600;
+}
+.hud-side {
+  position:absolute; top:50%; transform:translateY(-50%);
+  width:110px; display:flex; flex-direction:column; gap:10px;
+  font-size:9px; letter-spacing:1.4px; color:rgba(120, 225, 255, 0.62);
+  pointer-events:none;
+}
+.hud-side.left { left:24px; text-align:left; border-left:2px solid rgba(0, 240, 255, 0.3); padding-left:10px; }
+.hud-side.right { right:24px; text-align:right; border-right:2px solid rgba(0, 240, 255, 0.3); padding-right:10px; }
+.hud-metric-title { color:rgba(255, 185, 50, 0.85); font-weight:600; font-size:8.5px; }
+.hud-bar { height:3px; background:rgba(0, 225, 255, 0.14); border-radius:2px; overflow:hidden; margin-top:3px; }
+.hud-bar-fill { height:100%; width:78%; background:linear-gradient(90deg, #00f0ff, #ffaa00); box-shadow:0 0 6px #00f0ff; transition:width 0.15s ease; }
+@media (max-width: 560px) {
+  .hud-side { display:none; }
+  .hud-top, .hud-bottom { gap:8px; font-size:9px; letter-spacing:0.5px; }
+  .hud-top > *, .hud-bottom > * { min-width:0; max-width:50%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+}
+#hint {
+  position:absolute; left:12px; right:12px; bottom:42px;
+  z-index:2;
+  color:#9beeff; text-align:center;
+  font:12px 'Segoe UI',sans-serif; letter-spacing:1px;
+  text-shadow:0 0 10px rgba(0,220,255,0.6);
+}
+canvas { position:relative; display:block; width:100%; height:100%; z-index:1; }
+</style>
+<script type="importmap">{"imports":{"three":"./three/build/three.module.js"}}</script>
+</head><body>
+<div id="stage">
+  <div class="hud-overlay">
+    <div class="corner tl"></div><div class="corner tr"></div>
+    <div class="corner bl"></div><div class="corner br"></div>
+    <div class="hud-top">
+      <span id="hudSys" class="hud-tag">STARK // QUANTUM MATRIX MK-85</span>
+      <span id="hudMode" class="hud-tag">J.A.R.V.I.S // STANDBY</span>
+    </div>
+    <div class="hud-side left">
+      <div>
+        <div class="hud-metric-title">ARC HARMONICS</div>
+        <div id="hudHarmonic">428.6 THz</div>
+        <div class="hud-bar"><div id="barHarmonic" class="hud-bar-fill"></div></div>
+      </div>
+      <div>
+        <div class="hud-metric-title">SYNAPTIC NODES</div>
+        <div>4,096 ACTIVE</div>
+        <div class="hud-bar"><div id="barNodes" class="hud-bar-fill" style="width:92%"></div></div>
+      </div>
+      <div>
+        <div class="hud-metric-title">GYRO LOCK</div>
+        <div id="hudGyro">ORBITAL // SYNC</div>
+      </div>
+    </div>
+    <div class="hud-side right">
+      <div>
+        <div class="hud-metric-title">VOICE MODULATION</div>
+        <div id="hudVoiceDb">-42.0 dB</div>
+        <div class="hud-bar"><div id="barVoice" class="hud-bar-fill" style="width:18%"></div></div>
+      </div>
+      <div>
+        <div class="hud-metric-title">QUANTUM FLUX</div>
+        <div id="hudFlux">99.98%</div>
+        <div class="hud-bar"><div class="hud-bar-fill" style="width:96%"></div></div>
+      </div>
+      <div>
+        <div class="hud-metric-title">PROTOCOL</div>
+        <div>ALEX // DIRECT</div>
+      </div>
+    </div>
+    <div class="hud-bottom">
+      <span id="hudFreq">NEURAL LINK // ONLINE</span>
+      <span id="hudAudio">VOICE // IDLE</span>
+    </div>
+  </div>
+  <div id="hint">Đang khởi tạo Lõi Lượng Tử Hologram…</div>
+</div>
+<script type="module" src="./avatar.js"></script>
+</body></html>

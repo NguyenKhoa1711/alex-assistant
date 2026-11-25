@@ -28,12 +28,12 @@ def incomplete_open_kind(question: str) -> str | None:
     text = normalized(question).strip(' .!?…')
     if not text or len(text) > 180 or any(c in text for c in '\r\n'):
         return None
-    prefix = (r'(?:(?:hay giup toi|hay giup minh|ban co the|co the|toi muon ban|'
-              r'minh muon ban|toi muon|minh muon|vui long|lam on|hay|ban|'
-              r'cho toi|cho minh|giup toi|giup minh) ){0,3}')
-    suffix = r'(?: (?:giup toi|giup minh|cho toi|cho minh|di|nhe|len|voi|ngay|duoc khong)){0,4}'
+    prefix = (r'(?:(?:hay giup toi|hay giup minh|hay giup tao|ban co the|may co the|co the|toi muon ban|'
+              r'minh muon ban|tao muon may|toi muon|minh muon|tao muon|vui long|lam on|hay|ban|may|'
+              r'cho toi|cho minh|cho tao|cho tui|giup toi|giup minh|giup tao|giup tui) ){0,3}')
+    suffix = r'(?: (?:giup toi|giup minh|giup tao|giup tui|cho toi|cho minh|cho tao|cho tui|di|nhe|len|voi|ngay|duoc khong)){0,4}'
     match = re.fullmatch(prefix + r'(?:mo|bat|chay|khoi dong)'
-                         r'(?: (?:cho|giup) (?:toi|minh))?'
+                         r'(?: (?:cho|giup) (?:toi|minh|tao|tui))?'
                          r'(?: (?P<kind>ung dung(?: dung){0,2}|phan mem(?: mem){0,2}|'
                          r'app(?: app){0,2}|thu muc(?: muc){0,2}))?' + suffix, text)
     if match is None:
@@ -41,17 +41,18 @@ def incomplete_open_kind(question: str) -> str | None:
     return 'folder' if (match.group('kind') or '').startswith('thu muc') else 'app'
 
 
-def launch_name(question: str) -> str | None:
-    """Extract one explicit app-opening request from natural Vietnamese speech."""
+def _literal_launch_name(question: str) -> str | None:
+    """Extract the entire requested name before dropping category words."""
     text = normalized(question).strip(' ,.!?')
     if not text or len(text) > 180 or any(char in text for char in '\r\n'):
         return None
-    prefixes = ('alex oi', 'alex', 'a lech oi', 'a lech', 'ban oi',
+    prefixes = ('alex oi', 'alex', 'a lech oi', 'a lech', 'ban oi', 'may oi',
+                'tiep toi', 'tiep theo', 'sau do', 'bay gio', 'gio thi', 'gio', 'the thi', 'vay thi', 'xong roi',
                 'vang', 'da', 'u', 'uh', 'a', 'o', 'oi', 'nay', 'e', 'oke', 'ok', 'duoc roi',
-                'hay giup toi', 'hay giup minh', 'ban co the', 'co the',
-                'toi muon ban', 'minh muon ban', 'toi muon', 'minh muon',
-                'vui long', 'lam on', 'hay', 'ban', 'cho toi', 'cho minh',
-                'giup toi', 'giup minh')
+                'hay giup toi', 'hay giup minh', 'hay giup tao', 'ban co the', 'may co the', 'co the',
+                'toi muon ban', 'minh muon ban', 'tao muon may', 'toi muon', 'minh muon', 'tao muon',
+                'vui long', 'lam on', 'hay', 'ban', 'may', 'cho toi', 'cho minh', 'cho tao', 'cho tui',
+                'giup toi', 'giup minh', 'giup tao', 'giup tui')
     for _ in range(5):
         text = text.lstrip(' ,;:-')
         prefix = next((value for value in prefixes
@@ -59,18 +60,26 @@ def launch_name(question: str) -> str | None:
         if prefix is None:
             break
         text = text[len(prefix):].lstrip(' ,;:-')
-    text = re.sub(r' cao cho (toi|minh)$', r' cho \1', text)
+    text = re.sub(r' cao cho (toi|minh|tao|tui)$', r' cho \1', text)
     match = re.fullmatch(r'(?:mo|maa|mat|bat|chay|khoi dong|vao|vo|truy cap) (.+)', text)
     if match is None:
         return None
     name = match.group(1).strip()
-    name = re.sub(r'^(?:(?:cho|giup) (?:toi|minh) )', '', name)
+    name = re.sub(r'^(?:(?:cho|giup) (?:toi|minh|tao|tui) )', '', name)
     for _ in range(3):
         old = name
-        name = re.sub(r' (?:giup|cho) (?:toi|minh)$| (?:di|nhe|len|voi|ngay|duoc khong)$',
+        name = re.sub(r' (?:giup|cho) (?:toi|minh|tao|tui)$| (?:di|nhe|len|voi|ngay|duoc khong)$',
                       '', name).strip()
         if name == old:
             break
+    return name or None
+
+
+def launch_name(question: str) -> str | None:
+    """Extract one explicit app-opening request from natural Vietnamese speech."""
+    name = _literal_launch_name(question)
+    if name is None:
+        return None
     name = re.sub(r'^(?:phan mem|ung dung|app|game|chuong trinh) ', '', name).strip()
     if (not name or
             re.match(r'^(?:nhac|bai(?:\s+hat|\s+nhac)?|ca\s+khuc|ban\s+nhac|video|mv|clip|tin\s+nhan|cuoc\s+tro\s+chuyen)\b', name) or
@@ -78,6 +87,23 @@ def launch_name(question: str) -> str | None:
             re.search(r'\b(?:roi|sau do|va|xoa|gui|tat|dung lai)\b|[\\/:;*?"<>|]', name)):
         return None
     return name
+
+
+def _safe_literal_open_name(question: str) -> str | None:
+    """Only for an exact registered name; no fuzzy match or generated command."""
+    name = _literal_launch_name(question)
+    if (not name or re.search(r'\b(?:roi|sau do|va|xoa|tat|dung lai)\b|[\\/:;*?"<>|]', name)
+            or re.match(r'^(?:nhac|bai(?:\s+hat|\s+nhac)?|ca\s+khuc|ban\s+nhac|video|mv|clip|tin\s+nhan|cuoc\s+tro\s+chuyen)\b', name)
+            or re.search(r'\b(?:tren|trong|o)\s+(?:youtube|spotify|zalo)\b', name)):
+        return None
+    return name
+
+
+def _literal_name_variants(literal: str | None) -> tuple[str, ...]:
+    if not literal:
+        return ()
+    stripped = re.sub(r'^(?:phan mem|ung dung|app|game|chuong trinh) ', '', literal).strip()
+    return (literal, stripped) if stripped and stripped != literal else (literal,)
 
 
 def requested_app(question: str, entries: list[dict]) -> dict | None:
@@ -88,7 +114,7 @@ def requested_app(question: str, entries: list[dict]) -> dict | None:
             return entry
     # "Bơ" is ambiguous: only a complete explicit request with an exact known
     # app is accepted. Never use this repair for fuzzy discovery or multi-actions.
-    repair = re.fullmatch(r'(?:(?:hay|ban) )?bo (.+?) (?:cho|giup) (?:toi|minh)', text)
+    repair = re.fullmatch(r'(?:(?:hay|ban|may) )?bo (.+?) (?:cho|giup) (?:toi|minh|tao|tui)', text)
     name = launch_name('mo ' + repair.group(1)) if repair else launch_name(question)
     if name is None:
         return None
@@ -123,18 +149,25 @@ def _display_name_matches(asked: str, display_name: str) -> int:
         return 0
     suffix = key[len(asked_key) + 1:]
     allowed = {'desktop', 'app', 'application', 'english', 'vietnamese',
-               'x64', 'x86', '64', '32', 'bit', 'demo', 'demonstration'}
-    return 1 if all(part in allowed or re.fullmatch(r'\d{1,4}', part)
+               'x64', 'x86', '64', '32', 'bit', 'demo', 'demonstration', 'version'}
+    return 1 if all(part in allowed or re.fullmatch(r'v?\d{1,4}', part)
                     for part in suffix.split()) else 0
 
 
 def requested_shortcut(question: str, roots: list[Path] | None = None) -> dict | None:
     """Find one installed shortcut by its display name, without executing dictation."""
+    literal = _safe_literal_open_name(question)
     name = launch_name(question)
-    if name is None:
+    if not literal and not name:
         return None
     shortcuts = (_installed_shortcuts() if roots is None else
                  tuple(path for root in roots if root.is_dir() for path in root.rglob('*.lnk')))
+    for variant in _literal_name_variants(literal):
+        exact = [path for path in shortcuts if _display_name_matches(variant, path.stem) == 2]
+        if exact:
+            return {'name': exact[0].stem, 'shortcut_path': str(exact[0])} if len({normalized(p.stem) for p in exact}) == 1 else None
+    if name is None:
+        return None
     ranked = [(score, path) for path in shortcuts
               if (score := _display_name_matches(name, path.stem))]
     if not ranked:
@@ -215,7 +248,7 @@ def _registered_entry(display: str, target: str) -> dict | None:
                 re.search(r'(?i)(?:uninstall|unins\d*|setup|installer|repair)', path.stem)):
             return None
         return {'name': display, 'executable_path': str(path),
-                'processes': [path.name.lower()]}
+                'processes': [path.name.lower()], 'allow_install_window_match': True}
     if _safe_app_id(target):
         if '\\' in target:
             return {'name': display, 'app_id': target,
@@ -226,10 +259,20 @@ def _registered_entry(display: str, target: str) -> dict | None:
 
 def requested_system_app(question: str, apps: list[tuple[str, str]] | None = None) -> dict | None:
     """Match one launchable Windows app by its registered display name."""
+    literal = _safe_literal_open_name(question)
     name = launch_name(question)
+    if not literal and not name:
+        return None
+    catalog = apps if apps is not None else _apps_folder()
+    for variant in _literal_name_variants(literal):
+        exact = [entry for display, target in catalog
+                 if _display_name_matches(variant, display) == 2 and
+                 (entry := _registered_entry(display, target)) is not None]
+        if exact:
+            return exact[0] if len({entry.get('app_id', entry.get('executable_path')) for entry in exact}) == 1 else None
     if name is None:
         return None
-    ranked = [(score, entry) for display, target in (apps if apps is not None else _apps_folder())
+    ranked = [(score, entry) for display, target in catalog
               if (score := _display_name_matches(name, display)) and
               (entry := _registered_entry(display, target)) is not None]
     if not ranked:
@@ -244,6 +287,63 @@ def requested_system_app(question: str, apps: list[tuple[str, str]] | None = Non
 _APP_PATH_CACHE: tuple[dict, ...] = ()
 _APP_PATH_CACHE_AT = 0.0
 _APP_PATH_CACHE_LOCK = threading.Lock()
+
+
+def _product_icon_entry(display: str, icon: str) -> dict | None:
+    """Use an installed-program icon only if its executable matches the product name."""
+    if not isinstance(display, str) or not isinstance(icon, str):
+        return None
+    if re.search(r'(?i)\b(?:uninstall|remove|setup|installer|repair|update|driver|'
+                 r'redistributable|runtime|component|helper|server)\b', display):
+        return None
+    match = re.fullmatch(r'\s*(?:"([^"\r\n]+\.exe)"|([^",\r\n]+\.exe))\s*(?:,\s*-?\d+)?\s*',
+                         os.path.expandvars(icon), re.IGNORECASE)
+    if not match:
+        return None
+    path = Path((match.group(1) or match.group(2)).strip())
+    process = path.name.lower()
+    if (not path.is_absolute() or not path.is_file() or process in _BLOCKED_EXECUTABLES
+            or re.search(r'(?i)(?:uninstall|unins\d*|setup|installer|repair|update|helper|server|proxy|'
+                         r'vcredist|redist|runtime|dpinst|diagnostic)', path.stem)):
+        return None
+    product = normalized(display)
+    product = re.sub(r'\s*\((?:x64|x86|32-bit|64-bit|user)\)\s*$', '', product)
+    product = re.sub(r'\s+(?:version\s+|v)?\d+(?:\.\d+)*\s*$', '', product)
+    key = lambda value: re.sub(r'[^a-z0-9]+', '', normalized(value))
+    if len(key(product)) < 4 or key(product) != key(path.stem):
+        return None
+    return {'name': display, 'executable_path': str(path), 'processes': [process],
+            'allow_install_window_match': True}
+
+
+def _uninstall_icon_apps() -> list[dict]:
+    """Read installed-product display names and conservative icon executables."""
+    result: list[dict] = []
+    subkey = r'SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall'
+    for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+        for view in (winreg.KEY_WOW64_64KEY, winreg.KEY_WOW64_32KEY):
+            try:
+                root = winreg.OpenKey(hive, subkey, 0, winreg.KEY_READ | view)
+            except OSError:
+                continue
+            with root:
+                for index in range(winreg.QueryInfoKey(root)[0]):
+                    try:
+                        with winreg.OpenKey(root, winreg.EnumKey(root, index)) as item:
+                            display = winreg.QueryValueEx(item, 'DisplayName')[0]
+                            icon = winreg.QueryValueEx(item, 'DisplayIcon')[0]
+                            try:
+                                hidden = winreg.QueryValueEx(item, 'SystemComponent')[0]
+                            except OSError:
+                                hidden = 0
+                    except OSError:
+                        continue
+                    if hidden:
+                        continue
+                    entry = _product_icon_entry(display, icon)
+                    if entry:
+                        result.append(entry)
+    return result
 
 
 def _app_paths() -> list[dict]:
@@ -291,6 +391,11 @@ def _app_paths() -> list[dict]:
                             seen.add(key)
                             found.append({'name': display, 'executable_path': str(executable),
                                           'processes': [process]})
+        for entry in _uninstall_icon_apps():
+            key = entry['executable_path'].lower()
+            if key not in seen:
+                seen.add(key)
+                found.append(entry)
         if found:
             _APP_PATH_CACHE = tuple(found)
             _APP_PATH_CACHE_AT = time.monotonic()
@@ -299,10 +404,18 @@ def _app_paths() -> list[dict]:
 
 def requested_app_path(question: str, entries: list[dict] | None = None) -> dict | None:
     """Find a single installed app registered in Windows App Paths."""
+    literal = _safe_literal_open_name(question)
     name = launch_name(question)
+    if not literal and not name:
+        return None
+    paths = entries if entries is not None else _app_paths()
+    for variant in _literal_name_variants(literal):
+        exact = [entry for entry in paths if _display_name_matches(variant, entry['name']) == 2]
+        if exact:
+            return exact[0] if len({entry['executable_path'] for entry in exact}) == 1 else None
     if name is None:
         return None
-    ranked = [(score, entry) for entry in (entries if entries is not None else _app_paths())
+    ranked = [(score, entry) for entry in paths
               if (score := _display_name_matches(name, entry['name']))]
     if not ranked:
         return None
@@ -617,7 +730,8 @@ class LaunchResult:
         return f'Mình đã mở {self.name}.'
 
 
-def _app_window_processes(hwnd: int, window_class: str, user, kernel) -> set[str]:
+def _app_window_processes(hwnd: int, window_class: str, user, kernel,
+                          full_path: bool = False) -> set[str]:
     """Resolve UWP frame ownership through its child, not the shared frame host."""
     processes: set[str] = set()
 
@@ -631,7 +745,7 @@ def _app_window_processes(hwnd: int, window_class: str, user, kernel) -> set[str
             size = wintypes.DWORD(32768)
             path = ctypes.create_unicode_buffer(size.value)
             if kernel.QueryFullProcessImageNameW(process_handle, 0, path, ctypes.byref(size)):
-                processes.add(path.value.rsplit('\\', 1)[-1].lower())
+                processes.add(path.value.lower() if full_path else path.value.rsplit('\\', 1)[-1].lower())
         finally:
             kernel.CloseHandle(process_handle)
 
@@ -680,13 +794,39 @@ def app_windows(entry: dict) -> list[int]:
             return True
         cls = ctypes.create_unicode_buffer(256)
         user.GetClassNameW(hwnd, cls, len(cls))
-        if any(matches_app_window(entry, title.value, process, cls.value)
-               for process in _app_window_processes(hwnd, cls.value, user, kernel)):
+        if any(matches_app_window(entry, title.value, ntpath.basename(process), cls.value)
+               or _matches_installed_window(entry, title.value, process, cls.value)
+               for process in _app_window_processes(hwnd, cls.value, user, kernel, full_path=True)):
             handles.append(hwnd)
         return True
     user.EnumWindows.argtypes = [callback_type, wintypes.LPARAM]
     user.EnumWindows(visit, 0)
     return handles
+
+
+def _matches_installed_window(entry: dict, title: str, executable: str, window_class: str) -> bool:
+    """Match a launcher child only with its product title and install directory."""
+    if (not entry.get('allow_install_window_match') or window_class in {'#32770', 'IME', 'MSCTFIME UI', 'tooltips_class32'}
+            or not entry.get('executable_path') or not entry.get('name') or not title
+            or normalized(entry['name']) not in normalized(title)):
+        return False
+    if ntpath.basename(executable).lower() in _BLOCKED_EXECUTABLES:
+        return False
+    try:
+        launcher = ntpath.normcase(ntpath.normpath(entry['executable_path']))
+        process = ntpath.normcase(ntpath.normpath(executable))
+        if not ntpath.isabs(launcher) or not ntpath.isabs(process):
+            return False
+        common = ntpath.commonpath((ntpath.dirname(launcher), ntpath.dirname(process)))
+    except (ValueError, TypeError):
+        return False
+    drive, rest = ntpath.splitdrive(common)
+    leaf = ntpath.basename(common).casefold()
+    return bool(drive and rest.strip('\\/') and leaf not in {
+        'windows', 'users', 'program files', 'program files (x86)', 'programdata',
+        'appdata', 'local', 'roaming', 'programs', 'applications', 'apps',
+        'desktop', 'downloads', 'temp', 'bin', 'software',
+    })
 
 
 def matches_app_window(entry: dict, title: str, process: str, window_class: str) -> bool:

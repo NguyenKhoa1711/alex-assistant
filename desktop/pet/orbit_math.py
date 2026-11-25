@@ -169,6 +169,69 @@ class FullscreenV:
         return False
 
 
+class PlanetSwipe:
+    """One open palm swiped horizontally; release before the next selection."""
+    DISTANCE = .16
+    WINDOW = 1.2
+    COOLDOWN = .9
+
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self.start = self.last = None
+        self.start_time = self.last_time = 0.
+        self.frames = 0
+        self.latched = False
+        self.released_at = None
+        self.cooldown_until = 0.
+
+    @staticmethod
+    def is_open(hand):
+        if len(hand) != 21:
+            return False
+        wrist = hand[0]
+        palm = max(.03, math.dist(wrist, hand[9]))
+        fingers = ((8, 6), (12, 10), (16, 14), (20, 18))
+        extended = all(math.dist(wrist, hand[tip]) > math.dist(wrist, hand[pip]) + .10*palm
+                       for tip, pip in fingers)
+        return extended and math.dist(hand[4], hand[8]) > .65*palm
+
+    def update(self, hands, now):
+        valid = len(hands) == 1 and self.is_open(hands[0])
+        if not valid:
+            self.start = self.last = None
+            self.frames = 0
+            if self.latched:
+                if self.released_at is None:
+                    self.released_at = now
+                elif now-self.released_at >= .25:
+                    self.latched = False
+            return 0
+        self.released_at = None
+        if self.latched or now < self.cooldown_until:
+            return 0
+        p = hands[0][9]
+        point = (float(p[0]), float(p[1]))
+        if not (.04 < point[0] < .96 and .04 < point[1] < .96):
+            self.start = self.last = None
+            self.frames = 0
+            return 0
+        if (self.start is None or now-self.start_time > self.WINDOW or
+                now-self.last_time > .3 or (self.last is not None and math.dist(point, self.last) > .14)):
+            self.start, self.start_time, self.frames = point, now, 1
+        else:
+            self.frames += 1
+        self.last, self.last_time = point, now
+        dx, dy = point[0]-self.start[0], point[1]-self.start[1]
+        if self.frames >= 3 and abs(dx) >= self.DISTANCE and abs(dy) <= .12:
+            self.latched = True
+            self.cooldown_until = now+self.COOLDOWN
+            self.start = self.last = None
+            return 1 if dx > 0 else -1
+        return 0
+
+
 class GestureMotion:
     """Only controls the visualization. No clicks, OS keys or assistant commands."""
     def __init__(self):
@@ -179,6 +242,7 @@ class GestureMotion:
         self.mode = ''
         self.last_time = 0
         self.separation_delta = 0.
+        self._separation_anchor = None
 
     @staticmethod
     def _pinched(hand, continuing=False):
@@ -189,6 +253,7 @@ class GestureMotion:
         self.separation_delta = 0.
         if not hands or now - self.last_time > .5:
             self.previous = None
+            self._separation_anchor = None
         self.last_time = now
         if not hands:
             self.mode = ''
@@ -229,13 +294,26 @@ class GestureMotion:
                 if abs(dx) < .15 and abs(dy) < .15:
                     result = (dx * 3.4, dy * 2.6, 1., tip)
             elif mode == 'separate':
-                delta = current[0] - self.previous[0]
-                if .002 < abs(delta) < .15:
+                # Keep sub-threshold movement instead of discarding it each
+                # frame: slow intentional drags should still advance layers.
+                anchor = self._separation_anchor
+                if anchor is None:
+                    anchor = self.previous[0]
+                delta = current[0] - anchor
+                if .002 <= abs(delta) < .15:
                     self.separation_delta = delta
+                    self._separation_anchor = current[0]
+                elif abs(delta) >= .15:
+                    # Rebase a tracking discontinuity; never apply the jump.
+                    self._separation_anchor = current[0]
             elif self.previous[0] > .06:
                 ratio = current[0] / self.previous[0]
                 # Suppress small camera jitter and limit each zoom step.
                 if abs(ratio-1.)>.006:
                     result = (0., 0., max(.96, min(1.04, ratio**.75)), tip)
+        if mode == 'separate' and self.mode != mode:
+            self._separation_anchor = current[0]
+        elif mode != 'separate':
+            self._separation_anchor = None
         self.mode, self.previous = mode, current
         return result

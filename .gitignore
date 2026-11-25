@@ -44,3 +44,19 @@ dist/
 *preview.png
 live-test-report.json
 tool-schemas.json
+
+# Deliberately excluded from the GitHub desktop/robot edition
+/android/
+/windows-unlock/
+/desktop/Alex-data/
+/desktop/pet/mobile.py
+/desktop/pet/unlock.py
+/desktop/pet/pc_control*.py
+**/phone-*
+**/.private-pc/
+**/alex_station_agent*
+**/.tools/
+**/venv/
+**/.pio/
+
+/robot/

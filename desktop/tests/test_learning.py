@@ -101,7 +101,7 @@ class LearningTests(unittest.TestCase):
         fresh = self.engine()
         fresh.app_actions.execute.return_value = ActionResult('Đang phát nhạc.', True)
         self.answer(fresh, 'nhạc làm việc')
-        self.assertEqual(fresh.app_actions.execute.call_args.args[0], Action('Spotify', 'play'))
+        self.assertEqual(fresh.app_actions.execute.call_args.args[0], Action('Spotify', 'play', auto_media=True))
         self.assertEqual(self.store.rows()[0]['successes'], 1)
         fresh.chat.stream.assert_not_called()
 
@@ -118,7 +118,7 @@ class LearningTests(unittest.TestCase):
             engine.previous_question_at = time.monotonic()
             engine.app_actions.execute.return_value = ActionResult('Đã kiểm tra.', verified)
             self.answer(engine, 'Không phải, ý tôi là mở nhạc')
-            self.assertEqual(self.store.lookup('cho nhạc làm việc'), Action('Spotify', 'play') if verified else None)
+            self.assertEqual(self.store.lookup('cho nhạc làm việc'), Action('Spotify', 'play', auto_media=True) if verified else None)
 
     def test_expired_correction_does_not_teach_stale_phrase(self):
         engine = self.engine(); engine.previous_question = 'cho nhạc làm việc'; engine.previous_question_at = 0
@@ -162,7 +162,7 @@ class LearningTests(unittest.TestCase):
     def test_contextual_commands_require_context(self):
         for text, operation in [('Dừng lại', 'pause'), ('Mở tiếp', 'play'), ('Bài khác', 'next')]:
             self.assertIsNone(parse_action(text))
-            self.assertEqual(parse_action(text, 'Spotify'), Action('Spotify', operation))
+            self.assertEqual(parse_action(text, 'Spotify'), Action('Spotify', operation, auto_media=operation in ('play', 'pause')))
         self.assertEqual(parse_action('Vào trong tin nhắn'), Action('Zalo', 'ask_contact'))
         self.assertEqual(parse_action('Mở tin nhắn Zalo'), Action('Zalo', 'ask_contact'))
         self.assertEqual(parse_action('Tìm liên hệ tên Nguyễn An trên Zalo'), Action('Zalo', 'chat', 'Nguyễn An'))

@@ -181,7 +181,8 @@ class LocalChat:
             'Trên máy tính này, bạn hỗ trợ mở và đóng ứng dụng, trang web, thư mục, tự động lướt web và dừng lướt web, '
             'phóng to hoặc thu nhỏ cửa sổ, chỉnh âm lượng, độ sáng màn hình, phát nhạc trên Spotify và YouTube. '
             'Chỉ xác nhận đã thao tác máy tính khi thông tin kết quả đã có sẵn trong câu hỏi; '
-            'nếu người dùng hỏi kiến thức, trò chuyện, tính toán, dịch thuật, tư vấn hoặc giải thích thì trả lời trực tiếp thật hữu ích.'
+            'nếu người dùng hỏi kiến thức, trò chuyện, tính toán, dịch thuật, tư vấn hoặc giải thích thì trả lời trực tiếp thật hữu ích. '
+            'Khi người dùng hỏi hoặc yêu cầu nói tiếng Anh hay tiếng Trung, trả lời tự nhiên đúng câu tiếng Anh hoặc tiếng Trung (kèm Pinyin có dấu thanh như 你好 (Nǐ hǎo)), không viết phiên âm IPA trong dấu gạch chéo.'
         )
         recent = self.history[-min(4, int(self.cfg.get('history_turns', 6))):]
         messages: list[dict[str, str]] = [{'role': 'system', 'content': system_prompt}]

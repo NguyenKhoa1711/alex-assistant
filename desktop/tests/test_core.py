@@ -12,6 +12,8 @@ from pet.stt import SpeechToText, correct_command_prefix
 class CoreTests(unittest.TestCase):
     def setUp(self) -> None:
         self.cfg = load_config()
+        # These legacy tests exercise the original explicit Vietnamese path.
+        self.cfg['stt']['language_mode'] = 'vi'
 
     def test_wake_and_question(self) -> None:
         aliases = self.cfg['wake']['aliases']

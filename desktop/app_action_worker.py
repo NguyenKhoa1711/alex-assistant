@@ -66,12 +66,19 @@ def invoke_control(control) -> None:
 
 
 class Ui:
-    def __init__(self, app: str) -> None:
+    def __init__(self, app: str, *, existing_hwnd: int | None = None) -> None:
         self.entry = next(x for x in load_config()['apps']['entries'] if x['name'] == app)
-        opened = open_registered_app(self.entry, threading.Event())
-        if not opened.verified:
-            raise RuntimeError(f'Chưa mở được cửa sổ {app}.')
-        self.hwnd = app_windows(self.entry)[0]
+        if existing_hwnd is not None:
+            # Bind to the caller's already verified window. Relaunching an
+            # Electron app here can reset the conversation between checks.
+            if type(existing_hwnd) is not int or existing_hwnd <= 0 or existing_hwnd not in app_windows(self.entry):
+                raise RuntimeError('Cửa sổ đích đã đóng hoặc thay đổi; mình đã dừng thao tác.')
+            self.hwnd = existing_hwnd
+        else:
+            opened = open_registered_app(self.entry, threading.Event())
+            if not opened.verified:
+                raise RuntimeError(f'Chưa mở được cửa sổ {app}.')
+            self.hwnd = app_windows(self.entry)[0]
         self.enable_accessibility()
         self.root = auto.ControlFromHandle(self.hwnd)
 
@@ -868,10 +875,13 @@ if __name__ == '__main__':
         if action.app == 'Tabs' and action.operation == 'close_current':
             from pet.tab_actions import close_browser_tab
             result = close_browser_tab(auto, target_window)
-        elif action.app == 'Spotify' and action.operation in ('play', 'pause', 'next', 'previous', 'song'):
-            result = spotify(action)
-        elif action.app == 'YouTube' and action.operation in ('play', 'pause', 'next', 'previous', 'song'):
-            result = youtube(action)
+        elif action.app in ('Spotify', 'YouTube') and action.operation in ('play', 'pause', 'next', 'previous', 'song'):
+            result = None
+            if action.operation in ('play', 'pause'):
+                from pet.media_session import control_media
+                result = control_media(action, youtube_open=is_youtube_open)
+            if result is None:
+                result = spotify(action) if action.app == 'Spotify' else youtube(action)
         elif action.app == 'Zalo' and action.operation == 'chat':
             result = zalo(action)
         else:

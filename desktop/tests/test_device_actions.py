@@ -44,7 +44,7 @@ class ParsingTests(unittest.TestCase):
                        'Tăng âm lượng micro', 'Tắt máy', 'Tắt nguồn',
                        'Giảm âm lượng trong video', 'Tăng âm lượng YouTube']:
             self.assertIsNone(parse_action(phrase), phrase)
-        self.assertEqual(parse_action('Tắt nhạc'), Action('Spotify', 'pause'))
+        self.assertEqual(parse_action('Tắt nhạc'), Action('Spotify', 'pause', auto_media=True))
         self.assertEqual(parse_action('Đóng tab'), Action('Tabs', 'close_current'))
 
     def test_invalid_percentages_are_local_clarifications(self):

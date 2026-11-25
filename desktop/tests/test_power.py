@@ -1,19 +1,16 @@
 from __future__ import annotations
-
 import time
 import unittest
 from unittest.mock import MagicMock, patch
-
 import numpy as np
-
 from pet.audio import Microphone, Utterance
 from pet.config import load_config
 from pet.controller import Controller
-from pet.mobile import MobileJob
+from pet.audio_jobs import AudioJob as MobileJob
 from pet.power import _turn_off_display_for_s0, execute_power, parse_power_request
 
-
 class PowerCommandTests(unittest.TestCase):
+
     def setUp(self) -> None:
         self.engine = Controller(load_config())
         self.engine.paused.clear()
@@ -29,8 +26,7 @@ class PowerCommandTests(unittest.TestCase):
         self.assertEqual(parse_power_request('Bạn tắt máy cho tôi', options), 'sleep')
         self.assertEqual(parse_power_request('Hãy tắt nguồn ngay', options), 'shutdown')
         self.assertEqual(parse_power_request('Cho máy ngủ', options), 'sleep')
-        for text in ('Cách tắt nguồn', 'Đừng tắt máy', 'Tắt máy rồi mở Chrome',
-                     'Tôi nói tắt máy chứ không phải tắt nguồn'):
+        for text in ('Cách tắt nguồn', 'Đừng tắt máy', 'Tắt máy rồi mở Chrome', 'Tôi nói tắt máy chứ không phải tắt nguồn'):
             with self.subTest(text=text):
                 self.assertIsNone(parse_power_request(text, options))
 
@@ -48,7 +44,7 @@ class PowerCommandTests(unittest.TestCase):
         self.engine.mic = MagicMock()
         with patch('pet.controller.execute_power') as power:
             self.say('Tắt máy')
-            self.engine.paused.clear()  # Simulate waking and showing the pet again.
+            self.engine.paused.clear()
             self.assertEqual(self.say('Tắt máy'), '')
             self.assertEqual(self.say('Tắt máy cho tôi'), '')
             power.assert_called_once_with('sleep')
@@ -95,8 +91,7 @@ class PowerCommandTests(unittest.TestCase):
 
     def test_remote_wait_locks_once_and_preserves_duplicate_guard(self) -> None:
         self.engine.mic = MagicMock()
-        with patch('pet.power.wants_remote_wait', return_value=True), \
-             patch('pet.controller.execute_power') as power:
+        with patch('pet.power.wants_remote_wait', return_value=True), patch('pet.controller.execute_power') as power:
             answer = self.say('Tắt máy')
             self.assertIn('chờ bạn mở khóa từ xa', answer)
             self.assertNotIn('cho máy ngủ', answer)
@@ -107,34 +102,12 @@ class PowerCommandTests(unittest.TestCase):
             self.engine.chat.stream.assert_not_called()
 
     def test_remote_wait_does_not_change_shutdown_or_wake(self) -> None:
-        with patch('pet.power.wants_remote_wait', return_value=True), \
-             patch('pet.controller.execute_power') as power:
+        with patch('pet.power.wants_remote_wait', return_value=True), patch('pet.controller.execute_power') as power:
             self.say('Tắt nguồn')
             power.assert_called_once_with('shutdown')
 
-    def test_remote_wait_verifies_lock_without_sending_monitor_power_or_sleep(self) -> None:
-        fake_user = MagicMock()
-        fake_user.LockWorkStation.return_value = True
-        with patch('pet.power.require_remote_wait') as keep_awake, \
-             patch('pet.power.ctypes.WinDLL', return_value=fake_user), \
-             patch('pet.power.UnlockGate') as gate, \
-             patch('pet.power.begin_display_priority', return_value='ticket') as begin, \
-             patch('pet.power.confirm_display_priority') as confirm, \
-             patch('pet.power._turn_off_display_for_s0') as blank:
-            gate.return_value.status.return_value = {'status': 'locked'}
-            execute_power('remote_wait')
-        fake_user.LockWorkStation.assert_called_once()
-        begin.assert_called_once()
-        confirm.assert_called_once_with('ticket')
-        fake_user.SetSuspendState.assert_not_called()
-        self.assertEqual(keep_awake.call_count, 2)
-        blank.assert_not_called()
-        fake_user.SendMessageTimeoutW.assert_not_called()
-
     def test_priority_failure_prevents_lock_and_never_sleeps(self) -> None:
-        with patch('pet.power.require_remote_wait'), \
-             patch('pet.power.begin_display_priority', side_effect=OSError('task missing')), \
-             patch('pet.power.ctypes.WinDLL') as win:
+        with patch('pet.power.require_remote_wait'), patch('pet.power.begin_display_priority', side_effect=OSError('task missing')), patch('pet.power.ctypes.WinDLL') as win:
             with self.assertRaises(OSError):
                 execute_power('remote_wait')
         win.assert_not_called()
@@ -142,18 +115,13 @@ class PowerCommandTests(unittest.TestCase):
     def test_lock_failure_cancels_temporary_priority(self) -> None:
         fake_user = MagicMock()
         fake_user.LockWorkStation.return_value = False
-        with patch('pet.power.require_remote_wait'), \
-             patch('pet.power.begin_display_priority', return_value='ticket'), \
-             patch('pet.power.cancel_display_priority') as cancel, \
-             patch('pet.power.ctypes.WinDLL', return_value=fake_user):
+        with patch('pet.power.require_remote_wait'), patch('pet.power.begin_display_priority', return_value='ticket'), patch('pet.power.cancel_display_priority') as cancel, patch('pet.power.ctypes.WinDLL', return_value=fake_user):
             with self.assertRaises(OSError):
                 execute_power('remote_wait')
         cancel.assert_called_once()
 
     def test_remote_wait_failure_never_falls_back_to_sleep(self) -> None:
-        with patch('pet.power.require_remote_wait', side_effect=OSError('on battery')), \
-             patch('pet.power.ctypes.WinDLL') as win, \
-             patch('pet.power._turn_off_display_for_s0') as blank:
+        with patch('pet.power.require_remote_wait', side_effect=OSError('on battery')), patch('pet.power.ctypes.WinDLL') as win, patch('pet.power._turn_off_display_for_s0') as blank:
             with self.assertRaises(OSError):
                 execute_power('remote_wait')
         win.assert_not_called()
@@ -167,6 +135,7 @@ class PowerCommandTests(unittest.TestCase):
 
     def test_interrupted_announcement_never_executes(self) -> None:
         with patch('pet.controller.execute_power') as power:
+
             def interrupt(*_args):
                 self.engine.cancelled.set()
             self.engine.speaker.speak.side_effect = interrupt
@@ -181,17 +150,14 @@ class PowerCommandTests(unittest.TestCase):
             sleep_answer = self.engine._answer('Hãy tắt máy cho tôi', self.utterance, 0.1, sleep_job)
             self.assertIn('cho máy ngủ', sleep_answer)
             self.assertTrue(sleep_job.audio)
-
             wake_job = MobileJob(np.zeros(100, dtype=np.float32))
             wake_answer = self.engine._answer('Bật máy tính lên cho tôi', self.utterance, 0.1, wake_job)
             self.assertIn('bật sáng màn hình', wake_answer)
             self.assertTrue(wake_job.audio)
-
             shutdown_job = MobileJob(np.zeros(100, dtype=np.float32))
             shutdown_answer = self.engine._answer('Tắt nguồn cho tôi', self.utterance, 0.1, shutdown_job)
             self.assertIn('tắt nguồn', shutdown_answer)
             self.assertTrue(shutdown_job.audio)
-
         self.assertEqual([c.args[0] for c in power.call_args_list], ['sleep', 'wake', 'shutdown'])
         self.engine.chat.stream.assert_not_called()
 
@@ -219,24 +185,17 @@ class PowerCommandTests(unittest.TestCase):
         self.assertNotIn('/f', command)
         fake_dll = MagicMock()
         fake_dll.SetSuspendState.return_value = 1
-        with patch('pet.power._enable_shutdown_privilege'), \
-             patch('pet.power.ctypes.WinDLL', return_value=fake_dll):
+        with patch('pet.power._enable_shutdown_privilege'), patch('pet.power.ctypes.WinDLL', return_value=fake_dll):
             execute_power('sleep')
         fake_dll.SetSuspendState.assert_called_once_with(False, False, False)
 
     def test_s0_sleep_falls_back_to_display_off_only_for_unsupported_api(self) -> None:
         fake_dll = MagicMock()
         fake_dll.SetSuspendState.return_value = 0
-        with patch('pet.power._enable_shutdown_privilege'), \
-             patch('pet.power.ctypes.WinDLL', return_value=fake_dll), \
-             patch('pet.power.ctypes.get_last_error', return_value=50), \
-             patch('pet.power._turn_off_display_for_s0') as display_off:
+        with patch('pet.power._enable_shutdown_privilege'), patch('pet.power.ctypes.WinDLL', return_value=fake_dll), patch('pet.power.ctypes.get_last_error', return_value=50), patch('pet.power._turn_off_display_for_s0') as display_off:
             execute_power('sleep')
         display_off.assert_called_once_with()
-        with patch('pet.power._enable_shutdown_privilege'), \
-             patch('pet.power.ctypes.WinDLL', return_value=fake_dll), \
-             patch('pet.power.ctypes.get_last_error', return_value=5), \
-             patch('pet.power._turn_off_display_for_s0') as display_off:
+        with patch('pet.power._enable_shutdown_privilege'), patch('pet.power.ctypes.WinDLL', return_value=fake_dll), patch('pet.power.ctypes.get_last_error', return_value=5), patch('pet.power._turn_off_display_for_s0') as display_off:
             with self.assertRaises(OSError):
                 execute_power('sleep')
         display_off.assert_not_called()
@@ -248,7 +207,6 @@ class PowerCommandTests(unittest.TestCase):
 
         def fake_power(action: str) -> None:
             done_when_called.append(first_job.done.is_set())
-
         first_job = MobileJob(np.zeros(100, dtype=np.float32))
         retry_job = MobileJob(np.zeros(100, dtype=np.float32))
         with patch('pet.controller.execute_power', side_effect=fake_power) as power:
@@ -256,23 +214,19 @@ class PowerCommandTests(unittest.TestCase):
             self.assertIn('cho máy ngủ', answer)
             self.assertEqual(done_when_called, [True])
             self.assertEqual(first_job.reply, answer)
-            # Duplicate retry arriving when laptop wakes up must be ignored.
             retry_answer = self.engine._answer('Tắt máy cho tôi', self.utterance, 0.1, retry_job)
             self.assertEqual(retry_answer, '')
             power.assert_called_once_with('sleep')
 
     def test_s0_display_off_uses_windows_monitor_power_message(self) -> None:
         fake_dll = MagicMock()
-        fake_dll.GetShellWindow.return_value = 0x10010
+        fake_dll.GetShellWindow.return_value = 65552
         fake_dll.SendMessageTimeoutW.return_value = 1
         with patch('pet.power.ctypes.WinDLL', return_value=fake_dll):
             _turn_off_display_for_s0()
-        hwnd, message, command, off, flags, timeout, _result = (
-            fake_dll.SendMessageTimeoutW.call_args.args)
-        self.assertNotEqual(hwnd, 0xFFFF)
-        self.assertEqual((hwnd, message, command, off), (0x10010, 0x0112, 0xF170, 2))
-        self.assertEqual((flags, timeout), (0x0002, 1000))
-
-
+        hwnd, message, command, off, flags, timeout, _result = fake_dll.SendMessageTimeoutW.call_args.args
+        self.assertNotEqual(hwnd, 65535)
+        self.assertEqual((hwnd, message, command, off), (65552, 274, 61808, 2))
+        self.assertEqual((flags, timeout), (2, 1000))
 if __name__ == '__main__':
     unittest.main()

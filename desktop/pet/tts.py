@@ -13,6 +13,7 @@ from piper.config import PiperConfig
 from piper.phonemize_espeak import ESPEAK_DATA_DIR
 import sounddevice as sd
 from .config import local_path
+from . import voice_motion
 
 
 def compatible_espeak_path(path: Path) -> Path:
@@ -72,7 +73,10 @@ class Speaker:
                     if cancelled.is_set():
                         stream.abort()
                         break
-                    stream.write(pcm[offset:offset + 512])
+                    block = pcm[offset:offset + 512]
+                    voice_motion.feed_pcm(block)
+                    stream.write(block)
+        voice_motion.clear()
         return first
 
     def close(self) -> None:

@@ -13,9 +13,10 @@ def natural_open(text: str) -> str:
     if '\n' in original or '\r' in original or len(original) > 200:
         return text
     candidate = original
-    prefix = (r'^(?:alex oi[, ]+|alex[, ]+|ban oi[, ]+|'
-              r'ban co the |ban giup (?:minh|toi) |'
-              r'(?:minh|toi) (?:muon|can) |nho ban |lam on |vui long |hay )')
+    prefix = (r'^(?:alex oi[, ]+|alex[, ]+|ban oi[, ]+|may oi[, ]+|'
+              r'tiep toi[, ]+|tiep theo[, ]+|sau do[, ]+|bay gio[, ]+|gio thi[, ]+|gio[, ]+|the thi[, ]+|vay thi[, ]+|xong roi[, ]+|'
+              r'ban co the |may co the |ban giup (?:minh|toi|tao) |may giup tao |'
+              r'(?:minh|toi|tao) (?:muon|can) |nho ban |nho may |lam on |vui long |ban |may |hay )')
     for _ in range(4):
         found = re.match(prefix, normalized(candidate))
         if not found:

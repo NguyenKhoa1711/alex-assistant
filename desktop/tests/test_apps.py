@@ -200,7 +200,7 @@ class AppCommandTests(unittest.TestCase):
                                     Utterance(np.zeros(100), time.monotonic()), 0)
         launch.assert_called_once()
         engine.speaker.speak.assert_called_once()
-        self.assertEqual(result, 'Mình đã mở Spotify.')
+        self.assertEqual(result, 'Tao đã mở Spotify.')
         self.assertFalse(engine.failed.is_set())
 
     def test_autocad_request_after_zalo_does_not_open_a_contact(self):
@@ -217,7 +217,7 @@ class AppCommandTests(unittest.TestCase):
         self.assertEqual(launch.call_args.args[0]['name'], 'AutoCAD')
         engine.app_actions.execute.assert_not_called()
 
-    def test_verified_status_is_spoken_once_before_model_finishes(self):
+    def test_verified_status_is_spoken_once_without_replaying_action(self):
         engine = Controller(self.cfg); engine.chat = engine.gemini_chat = MagicMock(); engine.speaker = MagicMock()
         engine.request_plan = MagicMock(return_value=True)
         heard = threading.Event()
@@ -227,12 +227,13 @@ class AppCommandTests(unittest.TestCase):
             self.assertTrue(heard.wait(2))
             yield 'Unreliable model paraphrase that must not be spoken.'
         def speak(text, cancelled, on_play):
-            self.assertEqual(text, 'Mình đã mở Spotify.')
+            self.assertEqual(text, 'Tao đã mở Spotify.')
             on_play(.01); heard.set()
         engine.chat.stream.side_effect = stream; engine.speaker.speak.side_effect = speak
         with patch('pet.controller.open_registered_app', return_value=LaunchResult('Spotify', True, True, .1)):
             engine._answer('Mở suppotify', Utterance(np.zeros(100), time.monotonic()), 0)
         self.assertEqual(engine.speaker.speak.call_count, 1)
+        engine.chat.stream.assert_not_called()
         self.assertIsNone(engine.chat.on_submitted)
 
     def test_bionic_error_after_action_is_not_reported_as_action_failure(self):
@@ -244,7 +245,7 @@ class AppCommandTests(unittest.TestCase):
         with patch('pet.controller.open_web', return_value=LaunchResult(
                 'Portal UT', True, True, .1, 'web')):
             result = engine._answer('Mở trang học tập', Utterance(np.zeros(100), time.monotonic()), 0)
-        self.assertEqual(result, 'Mình đã gửi địa chỉ Portal UT tới trình duyệt.')
+        self.assertEqual(result, 'Tao đã gửi địa chỉ Portal UT tới trình duyệt.')
         self.assertFalse(engine.failed.is_set())
 
     def test_native_multiline_and_error_records(self):
@@ -440,7 +441,7 @@ class AppCommandTests(unittest.TestCase):
         self.assertIsNone(suggest_installed_app('Đừng mở ghi card', [], apps, (), []))
         self.assertIsNone(suggest_installed_app('Mở Minecraft', [], apps, (), []))
 
-    def test_uncertain_app_name_asks_then_opens_only_after_yes(self):
+    def test_unique_app_suggestion_opens_without_second_confirmation(self):
         engine = Controller(self.cfg)
         engine.chat = engine.gemini_chat = MagicMock()
         engine.speaker = MagicMock()
@@ -451,11 +452,8 @@ class AppCommandTests(unittest.TestCase):
         with patch('pet.controller.suggest_installed_app', return_value=suggestion), \
              patch('pet.controller.open_registered_app', return_value=LaunchResult(
                  'Claude', True, True, .1)) as launch:
-            question = engine._answer('Mở Closier Desktop cho tôi', utterance, 0)
-            self.assertIn('Bạn muốn mở Claude', question)
-            launch.assert_not_called()
-            answer = engine._answer('Đúng', utterance, 0)
-            self.assertEqual(answer, 'Mình đã mở Claude.')
+            answer = engine._answer('Mở Closier Desktop cho tôi', utterance, 0)
+            self.assertEqual(answer, 'Tao đã mở Claude.')
             launch.assert_called_once()
 
     def test_installed_app_takes_priority_over_known_website(self):
@@ -536,13 +534,16 @@ class AppCommandTests(unittest.TestCase):
             self.assertFalse(open_web('https://portal.ut.edu.vn/', 'Portal UT').verified)
 
     def test_unknown_open_is_reported_without_false_success(self):
-        engine = Controller(self.cfg); engine.chat = engine.gemini_chat = MagicMock(); engine.speaker = MagicMock()
+        engine = Controller(self.cfg)
+        engine.chat = engine.gemini_chat = MagicMock()
+        engine.speaker = MagicMock()
+        engine.chat.stream.return_value = iter(['Mình chưa tìm thấy ứng dụng đó.'])
         with patch('pet.controller.open_web') as web, patch('pet.controller.open_registered_app') as app:
             result = engine._answer('Mở trang web không biết',
                                     Utterance(np.zeros(100), time.monotonic()), 0)
         web.assert_not_called(); app.assert_not_called()
         self.assertIn('chưa tìm thấy', result)
-        self.assertIn('chưa tìm thấy', engine.chat.stream.call_args.args[0])
+        engine.chat.stream.assert_called_once()
 
     def test_app_and_web_launch_without_request_plan(self):
         engine = Controller(self.cfg)

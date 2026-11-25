@@ -15,6 +15,14 @@ os.environ['DO_NOT_TRACK'] = '1'
 
 import numpy as np
 from vieneu import Vieneu
+from pet.multilang_tts import (
+    install_vieneu_normalizer_patch,
+    prepare_multilang_speech,
+    shape_conversational_prosody,
+    tag_english_for_vieneu,
+)
+
+install_vieneu_normalizer_patch()
 
 
 def send(message: dict) -> None:
@@ -28,7 +36,7 @@ def main() -> None:
             mode='v3turbo',
             device='cpu',
             precision='int8',
-            threads=0,
+            threads=10,
             babble_retries=0,
         )
         try:
@@ -54,16 +62,18 @@ def main() -> None:
             if not isinstance(request_id, int) or not isinstance(text, str) or not 0 < len(text) <= 600:
                 send({'id': request_id, 'error': 'Câu nói không hợp lệ.'})
                 continue
+            shaped = shape_conversational_prosody(text)
+            spoken_text = tag_english_for_vieneu(prepare_multilang_speech(shaped, '', '')) or shaped
             try:
                 if stream and hasattr(tts, 'infer_stream'):
-                    for chunk in tts.infer_stream(text, voice=voice, apply_watermark=False):
+                    for chunk in tts.infer_stream(spoken_text, voice=voice, temperature=0.86, top_k=30, top_p=0.96, apply_watermark=False):
                         if chunk is not None and len(chunk) > 0:
                             pcm_chunk = (np.clip(chunk, -1, 1) * 32767).astype('<i2').tobytes()
                             send({'id': request_id, 'sample_rate': tts.sample_rate,
                                   'chunk': base64.b64encode(pcm_chunk).decode('ascii')})
                     send({'id': request_id, 'sample_rate': tts.sample_rate, 'done': True})
                 else:
-                    audio = tts.infer(text, voice=voice, apply_watermark=False)
+                    audio = tts.infer(spoken_text, voice=voice, temperature=0.86, top_k=30, top_p=0.96, apply_watermark=False)
                     pcm = (np.clip(audio, -1, 1) * 32767).astype('<i2').tobytes()
                     send({'id': request_id, 'sample_rate': tts.sample_rate,
                           'audio': base64.b64encode(pcm).decode('ascii')})

@@ -34,7 +34,7 @@ class ParsingTests(unittest.TestCase):
                      'Đóng tab rồi mở Zalo','Đóng Zalo và Chrome','Đóng file bài tập',
                      'Cách đóng tab','Tôi đang đóng tab','Tắt máy','Tắt nguồn','Đóng tab Bionic']:
             self.assertIsNone(parse_action(text),text)
-        self.assertEqual(parse_action('Tắt nhạc'),Action('Spotify','pause'))
+        self.assertEqual(parse_action('Tắt nhạc'),Action('Spotify','pause', auto_media=True))
 
 
 class BrowserTests(unittest.TestCase):

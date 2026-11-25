@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from html.parser import HTMLParser
 import ipaddress
 import re
@@ -35,8 +36,9 @@ _SECRET_SHAPE = re.compile(r'(?i)\b[\w.+-]+@[\w.-]+\.[a-z]{2,}\b|\b(?:\+?\d[\d .
 _CURRENT = re.compile(r'\b(?:thoi tiet|du bao|nhiet do|troi (?:co )?mua|mua (?:to |nho )?khong|tin tuc|thoi su|moi nhat|gan day|'
                       r'hom nay|bay gio|hien nay|hien tai|nam nay|gia vang|'
                       r'ty gia|gia co phieu|lich thi dau|ket qua bong da|'
-                      r'gia (?:xang|dau|vang|dien|bitcoin)|bao nhieu tien)\b')
-_FACT = re.compile(r'\b(?:la gi|la ai|la con gi|nghia la gi|nhu the nao|'
+                      r'gia (?:xang|dau|vang|dien|bitcoin)|bao nhieu tien|'
+                      r'trend|xu huong|viral|thinh hanh|tu long|tieng long|hot trend)\b')
+_FACT = re.compile(r'\b(?:la gi|la ai|la con gi|nghia la gi|nhu the nao|the nao|'
                    r'nhu nao|vi sao|tai sao|bao nhieu|o dau|khi nao|'
                    r'nam nao|ai (?:la|da|sang lap|phat minh|sang che|lam ra)|'
                    r'cach (?:lam|hoc|hoat dong)|giai thich|thong tin ve|'
@@ -47,20 +49,29 @@ _FACT = re.compile(r'\b(?:la gi|la ai|la con gi|nghia la gi|nhu the nao|'
 _KNOWLEDGE_SUBJECT = re.compile(
     r'\b(?:lich su|chien tranh|chien dich|tran danh|trieu dai|'
     r'quan dao|hoang sa|truong sa|chu quyen|bien dao|'
-    r'dia ly|dat nuoc|quoc gia)\b'
+    r'dia ly|dat nuoc|quoc gia|khoa hoc|thien van|cong nghe|sinh hoc|vat ly|hoa hoc)\b'
+)
+_INFORMATIVE_REQUEST = re.compile(
+    r'\b(?:co biet(?: gi)? ve|biet(?: gi)? ve|tim hieu ve|'
+    r'ke ve|noi ve|gioi thieu ve|cho biet ve|thong tin ve)\s+(?P<topic>\S.*)'
 )
 _EXPLICIT = re.compile(r'\b(?:tra cuu|tim hieu|tim kiem|tim|kiem tra|xem)\b.*'
                        r'\b(?:tra loi|tom tat|giai thich|cho (?:toi|minh) biet)\b|'
                        r'\b(?:tra loi|giai thich|tom tat)\b.*\b(?:tren mang|tren web|google|internet)\b')
 _CHAT = re.compile(r'\b(?:ban la ai|ban ten gi|ban co khoe|ban the nao|'
                    r'ban dang lam gi|ban dang o dau|ban co ranh|ban co cam xuc|ban nghi gi ve toi|dep trai nhat|'
-                   r'ke chuyen|kể chuyen|truyen cuoi|tam su|chao|cam on)\b')
+                   r'ke chuyen|kể chuyen|truyen cuoi|tam su|noi gi vui|chao|cam on)\b')
 _MATH = re.compile(r'^[\d\s.,+\-*/=()]+$|\b(?:cong|tru|nhan|chia)\b.*\b(?:bang may|bao nhieu)\b')
 _COMMAND = re.compile(r'^(?:(?:alex oi|alex|a lech|ban co the|nho ban|ban|hay|vui long|lam on|'
                       r'cho toi|cho minh|giup toi|giup minh|bay gio|hien tai) )*'
                       r'(?:mo|bat|tat|dong|phat|nghe|luot|cuon|keo|dung|chay|gui|xoa|'
                       r'phong to|thu nho|khoi phuc|tang|giam|'
                       r'nhan|bam|chon|nhap|cai dat|tim va mo)\b')
+
+
+def requires_fresh_results(question: str) -> bool:
+    """Identify questions where an offline model must not invent current facts."""
+    return bool(_CURRENT.search(folded(unicodedata.normalize('NFC', question))))
 
 
 def research_request(question: str) -> bool:
@@ -70,6 +81,8 @@ def research_request(question: str) -> bool:
     if _SECRET_SHAPE.search(question):
         return False
     key = folded(unicodedata.normalize('NFC', question)).strip(' .,!?:;')
+    # A greeting should not suppress a genuine follow-up factual question.
+    key = re.sub(r'^(?:chao|hello|hi) (?:alex|a lech|ban)[, ]*', '', key).strip()
     if not key or _PERSONAL.search(key) or _CHAT.search(key) or _MATH.search(key):
         return False
     # Polite "cho tôi/giúp mình" is not itself personal context. Other first-
@@ -84,10 +97,23 @@ def research_request(question: str) -> bool:
         return False
     if _EXPLICIT.search(key):
         return True
+    # Requests to learn about a subject are questions, even without "là gì".
+    # Personal content and explicit prohibitions have already been filtered.
+    # Strip polite recipients only; retain all remaining words for the query.
+    informative = re.sub(r'\b(?:cho|giup) (?:toi|minh)\b', '', key)
+    informative = re.sub(r'\s+', ' ', informative)
+    informative_match = _INFORMATIVE_REQUEST.search(informative)
+    if informative_match:
+        topic = informative_match.group('topic')
+        personal_topic = re.fullmatch(r'(?:ban|alex|a lech|toi|minh)(?: (?:khong|nhe|nha))?', topic)
+        has_action = re.search(r'\b(?:roi|sau do|va) (?:hay |ban )?(?:mo|bat|tat|dong|gui|xoa|chay)\b', informative)
+        if not personal_topic and not has_action:
+            return True
     # Simple "tìm ... trên Google" keeps the established browser-opening behaviour.
     if re.match(r'^(?:(?:alex|ban|hay|vui long) )*(?:tim|tra cuu|tim kiem)\b', key):
         return False
     return bool(_CURRENT.search(key) or _FACT.search(key)
+                or re.search(r'\bmấy\b', question, re.IGNORECASE)
                 or (_KNOWLEDGE_SUBJECT.search(key) and re.search(
                     r'\b(?:co biet|biet gi|noi ve|ke ve|gioi thieu|trinh bay|'
                     r'thong tin|tom tat|giai thich)\b', key)))
@@ -213,6 +239,22 @@ def search(question: str, cancelled: threading.Event) -> list[SearchResult]:
     key = folded(unicodedata.normalize('NFC', question))
     if cancelled.is_set():
         return []
+    # Long conversational queries are sometimes blocked by the search provider.
+    # Retry the same public question without polite prefixes, then use a fixed
+    # query for TikTok trends. Never add history or private information.
+    if not results:
+        compact = re.sub(r'^(?:chào|hello|hi)?\s*(?:alex|a lếch)?[,! ]*'
+                         r'(?:(?:bạn|hãy|vui lòng|cho mình|cho tôi|giúp mình|giúp tôi)\s+)*',
+                         '', question, flags=re.IGNORECASE).strip(' ,.!?')
+        if compact and compact.casefold() != question.strip(' ,.!?').casefold():
+            results = _search_once(compact, cancelled)
+    if (not results and not cancelled.is_set()
+            and re.search(r'\b(?:tiktok|tik tok)\b', key)
+            and re.search(r'\b(?:trend|xu huong|viral|thinh hanh|tu long)\b', key)):
+        fixed = f'câu nói viral TikTok Việt Nam nguồn gốc {datetime.now().year}'
+        results = _search_once(fixed, cancelled)
+    if cancelled.is_set():
+        return []
     if re.search(r'\b(?:hoang sa|truong sa)\b', key):
         official = _search_once(question + ' site:mofa.gov.vn', cancelled)
         if cancelled.is_set():
@@ -321,10 +363,22 @@ def context(question: str, results: list[SearchResult]) -> str:
             'Trả lời thẳng câu hỏi dựa vào các đoạn trích, nêu rõ chủ thể và các mốc '
             'nếu nguồn hỗ trợ. Phân biệt lập trường của từng nước với thực tế kiểm soát '
             'và kết luận pháp lý; không biến một tuyên bố thành phán quyết chung. '
+            'Khi câu hỏi về chủ quyền mà nguồn chính thức nêu rõ một nước khẳng định '
+            'chủ quyền với địa danh cụ thể, hãy nói rõ nước đó khẳng định điều gì, '
+            'và nêu có tranh chấp nếu thông tin cho thấy như vậy. Không nói nguồn '
+            'không có thông tin nếu đoạn trích thực sự đã nêu lập trường đó. '
             'Chỉ nêu bên có yêu sách nếu nguồn nói rõ bên đó yêu sách điều gì; '
             'không tự suy ra chủ quyền từ hoạt động hay quyền trên biển. '
             'Nói rõ khi có tranh chấp hoặc nguồn chưa đủ; không bịa thông tin hay nguồn. '
             'Nếu là câu hỏi về lịch sử, phân biệt sự kiện với cách giải thích. '
+            'Với xu hướng hoặc câu nói trên mạng, không khẳng định đang thịnh hành nếu '
+            'trích đoạn không chứng minh độ mới; nếu thiếu ví dụ hoặc thông tin, nói rõ. '
             'Trả lời tiếng Việt tự nhiên, '
-            'ngắn gọn. Chỉ viết câu trả lời, không viết danh sách nguồn, đường dẫn hay '
-            'ký hiệu [1], [2].\n\n' + entries)
+            'ngắn gọn, như đang trò chuyện trực tiếp. Không nhắc đến đoạn trích, bài viết '
+            'hay việc bạn đã cung cấp thông tin. Chỉ viết câu trả lời, không viết danh sách nguồn, đường dẫn hay '
+            'ký hiệu [1], [2].\n\n' + entries + '\n\n'
+            'Dựa trên các đoạn trên, trả lời trực tiếp câu hỏi: ' + question + '\n'
+            'Nếu đoạn trích cho biết rõ lập trường của một nước, hãy nêu lập trường đó '
+            'một cách cụ thể trước; sau đó nói ngắn gọn về tranh chấp nếu có. '
+            'Không nhắc đến đoạn trích hay nói người dùng cung cấp nguồn; '
+            'không hỏi lại khi đã có thông tin.')

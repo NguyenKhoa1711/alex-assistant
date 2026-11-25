@@ -105,5 +105,82 @@ class RemoteStandbyTests(unittest.TestCase):
             self.assertFalse(rs.WindowsPowerRequest().on_ac())
 
 
+class DisplayAwakeTests(unittest.TestCase):
+    def setUp(self):
+        self.backend = MagicMock()
+        self.backend.on_ac.return_value = True
+        self.backend.session_unlocked.return_value = True
+        self.backend.acquire.return_value = 123
+        self.backend.acquire_display.return_value = 456
+        self.guard = rs.RemoteStandby(True, self.backend, display_enabled=True)
+
+    def tearDown(self):
+        self.guard.close()
+
+    def test_display_only_while_plugged_in_and_unlocked(self):
+        self.guard.update()
+        self.guard.update()
+        self.backend.acquire_display.assert_called_once()
+        self.backend.session_unlocked.return_value = False
+        self.guard.update()
+        self.backend.release_display.assert_called_once_with(456)
+        self.backend.release.assert_not_called()  # remote waiting remains active
+        self.backend.session_unlocked.return_value = True
+        self.guard.update()
+        self.assertEqual(self.backend.acquire_display.call_count, 2)
+        self.backend.on_ac.return_value = False
+        self.guard.update()
+        self.assertEqual(self.backend.release_display.call_count, 2)
+        self.backend.release.assert_called_once_with(123)
+
+    def test_screen_hold_works_without_phone_bridge(self):
+        self.guard.enabled = False
+        self.assertFalse(self.guard.update())
+        self.backend.acquire.assert_not_called()
+        self.backend.acquire_display.assert_called_once()
+
+    def test_prepare_lock_never_reacquires_before_lock_then_unlock(self):
+        self.guard.update()
+        self.guard.prepare_lock()
+        self.backend.release_display.assert_called_once_with(456)
+        self.guard.update()  # still unlocked while Windows is preparing to lock
+        self.assertEqual(self.backend.acquire_display.call_count, 1)
+        self.guard.confirm_locked()
+        self.backend.session_unlocked.return_value = False
+        self.guard.update()
+        self.assertEqual(self.backend.acquire_display.call_count, 1)
+        self.backend.session_unlocked.return_value = True
+        self.guard.update()
+        self.assertEqual(self.backend.acquire_display.call_count, 2)
+
+    def test_unreadable_session_does_not_keep_screen_on_or_fake_lock(self):
+        self.guard.update()
+        self.guard.prepare_lock()
+        self.backend.session_unlocked.side_effect = [OSError('unknown'), True, True]
+        self.guard.update()
+        self.guard.update()
+        self.assertEqual(self.backend.acquire_display.call_count, 1)
+        self.guard.cancel_lock()
+        self.assertEqual(self.backend.acquire_display.call_count, 2)
+
+    def test_close_releases_both_requests(self):
+        self.guard.update()
+        self.guard.close()
+        self.backend.release.assert_called_once_with(123)
+        self.backend.release_display.assert_called_once_with(456)
+
+    def test_native_display_request_is_separate_and_released(self):
+        api = MagicMock()
+        api.PowerCreateRequest.return_value = 123
+        api.PowerSetRequest.return_value = True
+        with patch.object(rs.ctypes, 'WinDLL', return_value=api):
+            backend = rs.WindowsPowerRequest()
+            handle = backend.acquire_display()
+            backend.release_display(handle)
+        api.PowerSetRequest.assert_called_once_with(123, 0)
+        api.PowerClearRequest.assert_called_once_with(123, 0)
+        api.CloseHandle.assert_called_once_with(123)
+
+
 if __name__ == '__main__':
     unittest.main()

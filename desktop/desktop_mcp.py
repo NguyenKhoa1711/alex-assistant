@@ -1,9 +1,11 @@
 """Native Bionic desktop MCP, with plans approved in the Alex pet UI."""
 from __future__ import annotations
 import asyncio
+from contextlib import AsyncExitStack
 import json
 import os
 import threading
+from pathlib import Path
 from urllib.parse import urlparse
 from mcp import ClientSession, StdioServerParameters, types
 from mcp.client.stdio import stdio_client
@@ -17,6 +19,7 @@ from pet.minecraft import launch_minecraft, wants_minecraft_game
 from pet.files import find_paths, search_roots, open_path
 from pet.app_actions import AppActions, parse_action
 from pet.device_actions import parse_device_action
+from pet.external_mcp import ExternalMcpManager
 
 BACKEND_TOOLS = ('App', 'Snapshot', 'Click', 'Type', 'Scroll', 'Shortcut', 'Move', 'FileSystem', 'PowerShell')
 
@@ -49,7 +52,7 @@ def special_tools() -> list[types.Tool]:
             'name': {'type': 'string'}, 'kind': {'type': 'string',
                 'enum': ['app', 'file', 'folder']}},
             'required': ['name', 'kind'], 'additionalProperties': False}),
-        types.Tool(name='Plan', description='Call before multi-step computer UI actions. A direct request to open one app, file or folder uses the narrower OpenLocal tool instead. Ask the user to approve a concrete plan in Alex. Any installed Windows app is allowed if the user approves its name. Supply absolute file paths/directories only when needed. Stop if denied.',
+        types.Tool(name='Plan', description='Call before multi-step computer UI actions. Set goal to the exact current user request, without adding instructions. A direct request to open one app, file or folder uses OpenLocal. Alex checks the scope automatically during the active turn; do not ask the user to approve it again. Supply specific absolute paths only when needed. Stop if denied.',
         inputSchema={'type': 'object', 'properties': {
             'goal': {'type': 'string'}, 'steps': {'type': 'array', 'items': {'type': 'string'}},
             'apps': {'type': 'array', 'items': {'type': 'string'}},
@@ -105,6 +108,38 @@ def resolve_web(target: str, cfg: dict) -> tuple[str, str] | None:
             return None
         return target, url.hostname
     return requested_web('Mở ' + target, cfg.get('web', {}).get('sites', []))
+
+
+def default_browser_app() -> str:
+    """Read Windows' registered HTTPS handler; never alter the user's default."""
+    import winreg
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                r'Software\Microsoft\Windows\Shell\Associations\UrlAssociations\https\UserChoice') as key:
+            prog_id = str(winreg.QueryValueEx(key, 'ProgId')[0]).casefold()
+    except OSError:
+        return ''
+    for prefix, app in (('chromehtml', 'Chrome'), ('msedgehtm', 'Microsoft Edge'),
+                        ('firefoxurl', 'Firefox'), ('bravehtml', 'Brave'),
+                        ('operastable', 'Opera')):
+        if prog_id.startswith(prefix):
+            return app
+    return ''
+
+
+def expand_web_plan_apps(apps: list[str], cfg: dict) -> list[str]:
+    """A known web service is hosted by a browser, not a Windows process.
+
+    Add only the actual registered browser when a planned service has a known
+    website and no installed-app match. Other app/path/permission checks remain
+    in DesktopGuard. Unknown URLs and unrelated running windows grant nothing.
+    """
+    result = list(apps)
+    if any(resolve_web(app, cfg) and not resolve_app(app, cfg) for app in apps):
+        browser = default_browser_app()
+        if browser and browser.casefold() not in {app.casefold() for app in result}:
+            result.append(browser)
+    return result
 
 
 def device_control(command: str, cfg: dict) -> dict:
@@ -163,127 +198,171 @@ async def main() -> None:
     server = Server('Alex Desktop')
     serial = asyncio.Lock()
     with open(os.devnull, 'w') as errors:
-        async with stdio_client(parameters, errlog=errors) as (read, write):
-            async with ClientSession(read, write) as backend:
-                await backend.initialize()
-                backend_tools = {t.name: t for t in (await backend.list_tools()).tools if t.name in BACKEND_TOOLS}
-                @server.list_tools()
-                async def list_tools() -> list[types.Tool]:
-                    return special_tools() + list(backend_tools.values())
+        async with AsyncExitStack() as stack:
+            read, write = await stack.enter_async_context(stdio_client(parameters, errlog=errors))
+            backend = await stack.enter_async_context(ClientSession(read, write))
+            await backend.initialize()
+            backend_tools = {t.name: t for t in (await backend.list_tools()).tools if t.name in BACKEND_TOOLS}
+            ext_mgr = ExternalMcpManager(cfg)
+            await ext_mgr.start_all(stack)
+            @server.list_tools()
+            async def list_tools() -> list[types.Tool]:
+                return special_tools() + list(backend_tools.values()) + ext_mgr.list_tools()
 
-                @server.call_tool()
-                async def call_tool(name: str, arguments: dict) -> types.CallToolResult:
-                    async with serial:
-                        try:
-                            if name == 'CloseLocal':
-                                value = await asyncio.to_thread(close_local, arguments['command'], cfg)
-                                return types.CallToolResult(content=[types.TextContent(type='text',
-                                    text=json.dumps(value, ensure_ascii=False))], isError=not value['verified'])
-                            if name == 'DeviceControl':
-                                value = await asyncio.to_thread(device_control, arguments['command'], cfg)
-                                return types.CallToolResult(content=[types.TextContent(type='text',
-                                    text=json.dumps(value, ensure_ascii=False))], isError=not value['verified'])
-                            if name == 'MusicControl':
-                                value = await asyncio.to_thread(music_control, arguments['command'], cfg)
-                                return types.CallToolResult(content=[types.TextContent(type='text',
-                                    text=json.dumps(value, ensure_ascii=False))], isError=not value['verified'])
-                            if name in ('FindLocal', 'OpenLocal'):
-                                requested_name = str(arguments['name']).strip()
-                                kind = arguments['kind']
-                                if not requested_name or len(requested_name) > 150 or kind not in ('app', 'file', 'folder'):
-                                    raise ValueError('Cần tên ngắn và loại app/file/folder.')
-                                if kind == 'app':
-                                    entry = await asyncio.to_thread(resolve_app, requested_name, cfg)
-                                    website = resolve_web(requested_name, cfg) if not entry else None
-                                    value = {'found': bool(entry or website),
-                                             'name': entry['name'] if entry else website[1] if website else requested_name,
-                                             'kind': 'app' if entry else 'website' if website else 'unknown'}
-                                    if entry:
-                                        value.update({key: entry[key] for key in
-                                            ('executable_path', 'app_id', 'shortcut_path', 'shortcut_name') if key in entry})
-                                    elif website:
-                                        value['url'] = website[0]
-                                        value['message'] = 'Đã tìm thấy web cùng tên. Dùng OpenWeb để mở địa chỉ này.'
-                                    if name == 'OpenLocal' and entry:
-                                        play = (entry['name'] == 'TLauncher' and
-                                                wants_minecraft_game('Mở ' + requested_name))
-                                        opened = await asyncio.to_thread(
-                                            launch_minecraft if play else open_registered_app,
-                                            entry, threading.Event())
-                                        value = {'found': True, 'name': opened.name,
-                                                 'opened': opened.verified, 'foreground': opened.foreground,
-                                                 'message': opened.message,
-                                                 'note': 'Đã bấm nút vào game; chưa xác nhận Minecraft vào menu.'
-                                                         if opened.kind == 'minecraft_start' else ''}
-                                    elif name == 'OpenLocal' and website:
-                                        opened = await asyncio.to_thread(open_web, *website)
-                                        value = {'found': True, 'kind': 'website', 'url': website[0],
-                                                 'name': website[1], 'opened': opened.verified,
-                                                 'message': opened.message}
-                                else:
-                                    paths = await asyncio.to_thread(resolve_path, requested_name, kind, cfg)
-                                    value = {'found': bool(paths), 'matches': [str(path) for path in paths],
-                                             'truncated': len(paths) >= 6}
-                                    if name == 'OpenLocal' and len(paths) == 1:
-                                        sent = await asyncio.to_thread(open_path, paths[0])
-                                        value = {'found': True, 'name': paths[0].name,
-                                                 'path': str(paths[0]), 'sent_to_explorer': sent,
-                                                 'message': f'Đã gửi {paths[0].name} tới File Explorer.' if sent
-                                                            else f'Chưa mở được {paths[0].name} trong File Explorer.'}
-                                    elif name == 'OpenLocal' and len(paths) > 1:
-                                        value['message'] = 'Có nhiều mục cùng tên; cần tên thư mục chứa hoặc đường dẫn đầy đủ.'
-                                    elif name == 'OpenLocal':
-                                        value['message'] = 'Chưa tìm thấy đường dẫn trong các thư mục đã cấu hình.'
-                                return types.CallToolResult(content=[types.TextContent(type='text',
-                                    text=json.dumps(value, ensure_ascii=False))],
-                                    isError=(name == 'OpenLocal' and not (value.get('opened') or value.get('sent_to_explorer'))))
-                            if name == 'OpenWeb':
-                                website = resolve_web(str(arguments['target']), cfg)
-                                if website is None:
-                                    raise ValueError('Chưa nhận được URL http(s) hoặc tên web đã biết. Hỏi người dùng địa chỉ chính xác.')
-                                opened = await asyncio.to_thread(open_web, *website)
-                                value = {'url': website[0], 'name': website[1],
-                                         'accepted_by_browser': opened.verified,
-                                         'message': opened.message}
-                                return types.CallToolResult(content=[types.TextContent(type='text',
-                                    text=json.dumps(value, ensure_ascii=False))],
-                                    isError=not opened.verified)
-                            if name == 'Plan':
-                                value = await asyncio.to_thread(guard.plan, arguments['goal'], arguments['steps'], arguments['apps'], arguments.get('paths', []))
-                                return types.CallToolResult(content=[types.TextContent(type='text', text=json.dumps(value, ensure_ascii=False))], isError=not value.get('approved'))
-                            if name == 'Finish':
-                                value = await asyncio.to_thread(guard.verified_finish, arguments['evidence'])
-                                return types.CallToolResult(content=[types.TextContent(type='text', text=json.dumps(value, ensure_ascii=False))])
-                            if name == 'Cancel':
-                                await asyncio.to_thread(guard.finish)
-                                return types.CallToolResult(content=[types.TextContent(type='text', text='Đã thu hồi kế hoạch. Không thực hiện thêm.')])
-                            if name not in backend_tools:
-                                raise ValueError('Công cụ không được hỗ trợ.')
-                            args, window = await asyncio.to_thread(guard.before, name, arguments)
-                            if name in ('Click', 'Type', 'Scroll', 'Shortcut', 'Move'):
-                                live = await backend.call_tool('Snapshot', {'use_vision': False, 'use_annotation': False, 'use_ui_tree': True})
-                                live_text = result_text(live)
-                                if live.isError:
-                                    raise ValueError('Chưa đọc lại được đích thao tác; dừng bước này.')
-                                await asyncio.to_thread(guard.validate_live_target, name, args, live_text, window)
-                            result = await backend.call_tool(name, args)
-                            text = result_text(result)
-                            error = bool(result.isError) or text.lstrip().startswith('Error capturing desktop state:')
-                            await asyncio.to_thread(guard.after, name, args, window, text, error)
-                            return types.CallToolResult(content=result.content, isError=error)
-                        except asyncio.CancelledError:
+            @server.call_tool()
+            async def call_tool(name: str, arguments: dict) -> types.CallToolResult:
+                async with serial:
+                    try:
+                        if name == 'CloseLocal':
+                            value = await asyncio.to_thread(close_local, arguments['command'], cfg)
+                            return types.CallToolResult(content=[types.TextContent(type='text',
+                                text=json.dumps(value, ensure_ascii=False))], isError=not value['verified'])
+                        if name == 'DeviceControl':
+                            value = await asyncio.to_thread(device_control, arguments['command'], cfg)
+                            return types.CallToolResult(content=[types.TextContent(type='text',
+                                text=json.dumps(value, ensure_ascii=False))], isError=not value['verified'])
+                        if name == 'MusicControl':
+                            value = await asyncio.to_thread(music_control, arguments['command'], cfg)
+                            return types.CallToolResult(content=[types.TextContent(type='text',
+                                text=json.dumps(value, ensure_ascii=False))], isError=not value['verified'])
+                        if name in ('FindLocal', 'OpenLocal'):
+                            requested_name = str(arguments['name']).strip()
+                            kind = arguments['kind']
+                            if not requested_name or len(requested_name) > 150 or kind not in ('app', 'file', 'folder'):
+                                raise ValueError('Cần tên ngắn và loại app/file/folder.')
+                            if kind == 'app':
+                                entry = await asyncio.to_thread(resolve_app, requested_name, cfg)
+                                website = resolve_web(requested_name, cfg) if not entry else None
+                                value = {'found': bool(entry or website),
+                                         'name': entry['name'] if entry else website[1] if website else requested_name,
+                                         'kind': 'app' if entry else 'website' if website else 'unknown'}
+                                if entry:
+                                    value.update({key: entry[key] for key in
+                                        ('executable_path', 'app_id', 'shortcut_path', 'shortcut_name') if key in entry})
+                                elif website:
+                                    value['url'] = website[0]
+                                    value['message'] = 'Đã tìm thấy web cùng tên. Dùng OpenWeb để mở địa chỉ này.'
+                                if name == 'OpenLocal' and entry:
+                                    play = (entry['name'] == 'TLauncher' and
+                                            wants_minecraft_game('Mở ' + requested_name))
+                                    opened = await asyncio.to_thread(
+                                        launch_minecraft if play else open_registered_app,
+                                        entry, threading.Event())
+                                    value = {'found': True, 'name': opened.name,
+                                             'opened': opened.verified, 'foreground': opened.foreground,
+                                             'message': opened.message,
+                                             'note': 'Đã bấm nút vào game; chưa xác nhận Minecraft vào menu.'
+                                                     if opened.kind == 'minecraft_start' else ''}
+                                elif name == 'OpenLocal' and website:
+                                    opened = await asyncio.to_thread(open_web, *website)
+                                    value = {'found': True, 'kind': 'website', 'url': website[0],
+                                             'name': website[1], 'opened': opened.verified,
+                                             'message': opened.message}
+                            else:
+                                paths = await asyncio.to_thread(resolve_path, requested_name, kind, cfg)
+                                value = {'found': bool(paths), 'matches': [str(path) for path in paths],
+                                         'truncated': len(paths) >= 6}
+                                if name == 'OpenLocal' and len(paths) == 1:
+                                    sent = await asyncio.to_thread(open_path, paths[0])
+                                    value = {'found': True, 'name': paths[0].name,
+                                             'path': str(paths[0]), 'sent_to_explorer': sent,
+                                             'message': f'Đã gửi {paths[0].name} tới File Explorer.' if sent
+                                                        else f'Chưa mở được {paths[0].name} trong File Explorer.'}
+                                elif name == 'OpenLocal' and len(paths) > 1:
+                                    value['message'] = 'Có nhiều mục cùng tên; cần tên thư mục chứa hoặc đường dẫn đầy đủ.'
+                                elif name == 'OpenLocal':
+                                    value['message'] = 'Chưa tìm thấy đường dẫn trong các thư mục đã cấu hình.'
+                            return types.CallToolResult(content=[types.TextContent(type='text',
+                                text=json.dumps(value, ensure_ascii=False))],
+                                isError=(name == 'OpenLocal' and not (value.get('opened') or value.get('sent_to_explorer'))))
+                        if name == 'OpenWeb':
+                            website = resolve_web(str(arguments['target']), cfg)
+                            if website is None:
+                                raise ValueError('Chưa nhận được URL http(s) hoặc tên web đã biết. Hỏi người dùng địa chỉ chính xác.')
+                            opened = await asyncio.to_thread(open_web, *website)
+                            value = {'url': website[0], 'name': website[1],
+                                     'accepted_by_browser': opened.verified,
+                                     'message': opened.message}
+                            return types.CallToolResult(content=[types.TextContent(type='text',
+                                text=json.dumps(value, ensure_ascii=False))],
+                                isError=not opened.verified)
+                        if name == 'Plan':
+                            planned_apps = await asyncio.to_thread(expand_web_plan_apps, arguments['apps'], cfg)
+                            value = await asyncio.to_thread(guard.plan, arguments['goal'], arguments['steps'], planned_apps, arguments.get('paths', []))
+                            guard._agent_goal = arguments['goal'] if value.get('approved') else ''
+                            guard._agent_dispatched = set()
+                            return types.CallToolResult(content=[types.TextContent(type='text', text=json.dumps(value, ensure_ascii=False))], isError=not value.get('approved'))
+                        if name == 'Finish':
+                            value = await asyncio.to_thread(guard.verified_finish, arguments['evidence'])
+                            return types.CallToolResult(content=[types.TextContent(type='text', text=json.dumps(value, ensure_ascii=False))])
+                        if name == 'Cancel':
                             await asyncio.to_thread(guard.finish)
-                            raise
-                        except Exception as exc:
-                            guard.failed = True
-                            # A rejected step must not be retried through an unguarded tool.
-                            message = str(exc) if isinstance(exc, (ValueError, RuntimeError)) else 'Công cụ chưa hoàn tất; kiểm tra lại trạng thái trước khi thử tiếp.'
-                            return types.CallToolResult(content=[types.TextContent(type='text', text=message)], isError=True)
-                try:
-                    async with stdio_server() as (incoming, outgoing):
-                        await server.run(incoming, outgoing, server.create_initialization_options())
-                finally:
-                    await asyncio.to_thread(guard.finish)
+                            return types.CallToolResult(content=[types.TextContent(type='text', text='Đã thu hồi kế hoạch. Không thực hiện thêm.')])
+                        if ext_mgr.handles_tool(name):
+                            return await ext_mgr.call_tool(name, arguments, guard)
+                        if name not in backend_tools:
+                            raise ValueError('Công cụ không được hỗ trợ.')
+                        from pet.agent_dispatch import dispatched_step_key, is_eligible, should_require_empty
+                        require_empty = should_require_empty(name, arguments, cfg['computer'].get('use_agent_desktop', False),
+                                                             getattr(guard, '_agent_goal', ''))
+                        incoming = {**arguments, 'clear': False} if require_empty else arguments
+                        args, window = await asyncio.to_thread(guard.before, name, incoming)
+                        if name in ('Click', 'Type', 'Scroll', 'Shortcut', 'Move'):
+                            live = await backend.call_tool('Snapshot', {'use_vision': False, 'use_annotation': False, 'use_ui_tree': True})
+                            live_text = result_text(live)
+                            if live.isError:
+                                raise ValueError('Chưa đọc lại được đích thao tác; dừng bước này.')
+                            await asyncio.to_thread(guard.validate_live_target, name, args, live_text, window)
+                        target_line = guard._target_line(args.get('loc')) if name in ('Click', 'Type') else ''
+                        from pet.search_ui import search_input_query, run_search_input, augment_search_observation
+                        search_query = search_input_query(getattr(guard,'_agent_goal',''),args,target_line) if name=='Type' else None
+                        exe_stem = Path(getattr(window, 'executable', '') or '').stem.lower()
+                        use_agent = bool(search_query and cfg['computer'].get('use_agent_desktop',False)) or is_eligible(name, args, cfg['computer'].get('use_agent_desktop', False), target_line, exe_stem)
+                        if use_agent:
+                            from pet.agent_dispatch import run_agent_step
+                            try:
+                                key = dispatched_step_key(name, window, args, target_line)
+                                if key in getattr(guard, '_agent_dispatched', set()):
+                                    raise ValueError('Thao tác này đã được chuyển một lần; không tự lặp lại.')
+                                guard._agent_dispatched.add(key)
+                                value = (await asyncio.to_thread(run_search_input,guard,window,args,search_query)
+                                         if search_query else await asyncio.to_thread(run_agent_step, guard, window, name, args, require_empty=require_empty))
+                            except Exception:
+                                # Delivery may be unknown: revoke rather than replay through another backend.
+                                await asyncio.to_thread(guard.finish)
+                                phase = getattr(guard, '_agent_phase', 'preflight')
+                                raise ValueError('Chưa xác định được kết quả agent-desktop; dừng, không tự thử lại. '
+                                                 f'[agent_phase={phase}]')
+                            text = json.dumps(value, ensure_ascii=False)
+                            await asyncio.to_thread(guard.after, name, args, window, text, False)
+                            return types.CallToolResult(content=[types.TextContent(type='text', text=text)],
+                                                        structuredContent={'result': text})
+                        result = await backend.call_tool(name, args)
+                        text = result_text(result)
+                        error = bool(result.isError) or text.lstrip().startswith('Error capturing desktop state:')
+                        if name=='Snapshot' and not error:
+                            text=await asyncio.to_thread(augment_search_observation,guard,window,text)
+                        await asyncio.to_thread(guard.after, name, args, window, text, error)
+                        metadata=dict(result.structuredContent or {})
+                        if error:
+                            metadata['alex_error_type']='BackendError'
+                        content=[types.TextContent(type='text',text=text)] if name=='Snapshot' and not error else result.content
+                        return types.CallToolResult(content=content, isError=error,
+                                                    structuredContent=metadata or None)
+                    except asyncio.CancelledError:
+                        await asyncio.to_thread(guard.finish)
+                        raise
+                    except Exception as exc:
+                        guard.failed = True
+                        # A rejected step must not be retried through an unguarded tool.
+                        message = str(exc) if isinstance(exc, (ValueError, RuntimeError)) else 'Công cụ chưa hoàn tất; kiểm tra lại trạng thái trước khi thử tiếp.'
+                        return types.CallToolResult(content=[types.TextContent(type='text', text=message)], isError=True,
+                            structuredContent={'alex_error_type':type(exc).__name__})
+            try:
+                async with stdio_server() as (incoming, outgoing):
+                    await server.run(incoming, outgoing, server.create_initialization_options())
+            finally:
+                await asyncio.to_thread(guard.finish)
 
 
 if __name__ == '__main__':

@@ -8,7 +8,7 @@ from PySide6.QtCore import Qt, QTimer, Signal, QObject, QProcess, QVariantAnimat
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QComboBox, QCheckBox, QFrame, QSlider, QApplication, QStackedWidget)
 from .config import ROOT
-from .orbit_math import PLANETS, orbital_point, project, GestureMotion, FullscreenV
+from .orbit_math import PLANETS, orbital_point, project, GestureMotion, FullscreenV, PlanetSwipe
 from .orbit_scene import OrbitCanvas, PlanetPortrait
 from .planet_layers import PlanetLayersCanvas, layers_for
 
@@ -278,7 +278,7 @@ class SpacePage(QWidget):
         self.camera_pick.setAccessibleName('Chọn camera'); camera_row.addWidget(self.camera_pick)
         self.camera_status = text('Camera tắt • chỉ bật khi bạn chọn', 'subtle', True)
         camera_row.addWidget(self.camera_status,1); layout.addLayout(camera_row)
-        self.gesture_help=text('Chụm 1 tay xoay · Mở 2 tay zoom · Chụm 2 tay tách / ghép · Giữ chữ V: toàn màn hình.','subtle',True)
+        self.gesture_help=text('Chụm 1 tay xoay · Mở 2 tay zoom · Chụm 2 tay tách / ghép · Vẫy bàn tay mở trái/phải để đổi hành tinh, hạ tay trước lượt tiếp · Giữ chữ V: toàn màn hình.','subtle',True)
         layout.addWidget(self.gesture_help)
         # Floating controls sit over the actual scene, not in its layout.
         self.immersive_bar=QFrame(self.view_stack);self.immersive_bar.setObjectName('immersiveBar')
@@ -308,6 +308,7 @@ class SpacePage(QWidget):
         self.gesture_animation.valueChanged.connect(self._layer_progress)
         self._gesture_target=None
         self._fullscreen_v=FullscreenV()
+        self._planet_swipe=PlanetSwipe()
         self._pending_motion=[0.,0.,0.]
         self._motion_view=None
         self._motion_timer=QTimer(self);self._motion_timer.setInterval(16)
@@ -467,6 +468,7 @@ class SpacePage(QWidget):
         if not running:
             self._clear_motion()
             self._fullscreen_v.reset()
+            self._planet_swipe.reset()
             self.immersive_hint.clear();self.immersive_hint.hide()
             if self._immersive:self._place_immersive_bar()
             self._gesture_closed_latched=False
@@ -479,6 +481,9 @@ class SpacePage(QWidget):
         self.canvas.hands=hands
         now=time.monotonic()
         toggle_fullscreen=self._fullscreen_v.update(hands,now)
+        swipe=0 if self._fullscreen_v.holding else self._planet_swipe.update(hands,now)
+        if self._fullscreen_v.holding:
+            self._planet_swipe.reset()
         old_mode=self.canvas.motion.mode
         dx,dy,zoom,tip=self.canvas.motion.update(hands,now)
         if old_mode!=self.canvas.motion.mode:
@@ -518,6 +523,10 @@ class SpacePage(QWidget):
         if toggle_fullscreen:
             self.fullscreen_requested.emit()
             tip='Đã đổi chế độ toàn màn hình'
+        elif swipe:
+            self._clear_motion()
+            self._step(swipe)
+            tip='Đã chuyển hành tinh · hạ tay trước khi vẫy tiếp'
         elif not self._fullscreen_v.holding:self._queue_motion(dx,dy,zoom)
         feedback=self._fullscreen_v.feedback
         if self.immersive_hint.text()!=feedback:
@@ -563,6 +572,7 @@ class SpacePage(QWidget):
         if not active:
             self._clear_motion()
             self._fullscreen_v.reset()
+            self._planet_swipe.reset()
             self.gesture_animation.stop(); self._gesture_target=None
             if self.layer_animation.state()==QVariantAnimation.State.Running:
                 self.layer_animation.stop()

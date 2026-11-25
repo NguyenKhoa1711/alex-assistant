@@ -13,10 +13,10 @@ from pet.audio import Utterance
 class ActionTests(unittest.TestCase):
     def test_music_commands_and_preserve_names(self):
         cases = {
-            'Hãy mở nhạc': Action('Spotify', 'play'),
-            'Mở nhạc giúp tôi': Action('Spotify', 'play'),
-            'Bật nhạc lên': Action('Spotify', 'play'),
-            'Cho tôi nghe nhạc': Action('Spotify', 'play'),
+            'Hãy mở nhạc': Action('Spotify', 'play', auto_media=True),
+            'Mở nhạc giúp tôi': Action('Spotify', 'play', auto_media=True),
+            'Bật nhạc lên': Action('Spotify', 'play', auto_media=True),
+            'Cho tôi nghe nhạc': Action('Spotify', 'play', auto_media=True),
             'Tạm dừng nhạc trên Spotify': Action('Spotify', 'pause'),
             'Chuyển bài tiếp theo': Action('Spotify', 'next'),
             'Quay lại bài trước': Action('Spotify', 'previous'),
@@ -29,12 +29,12 @@ class ActionTests(unittest.TestCase):
             'Tìm nhạc của Sơn Tùng M-TP': Action('Spotify', 'song', 'Sơn Tùng M-TP'),
             'Bật nhạc chill dễ ngủ': Action('Spotify', 'song', 'chill dễ ngủ'),
             'Tìm và phát Lạc Trôi của Sơn Tùng': Action('Spotify', 'song', 'Lạc Trôi', 'Sơn Tùng'),
-            'Dừng nhạc đang chạy': Action('Spotify', 'pause'),
-            'Dừng nhạc đang phát cho tôi': Action('Spotify', 'pause'),
-            'Tắt nhạc đang chạy': Action('Spotify', 'pause'),
-            'Tạm dừng bài hát đang chạy': Action('Spotify', 'pause'),
-            'Dừng phát nhạc': Action('Spotify', 'pause'),
-            'Dừng nhạc vừa kiếm': Action('Spotify', 'pause'),
+            'Dừng nhạc đang chạy': Action('Spotify', 'pause', auto_media=True),
+            'Dừng nhạc đang phát cho tôi': Action('Spotify', 'pause', auto_media=True),
+            'Tắt nhạc đang chạy': Action('Spotify', 'pause', auto_media=True),
+            'Tạm dừng bài hát đang chạy': Action('Spotify', 'pause', auto_media=True),
+            'Dừng phát nhạc': Action('Spotify', 'pause', auto_media=True),
+            'Dừng nhạc vừa kiếm': Action('Spotify', 'pause', auto_media=True),
             'Tìm nhạc Lạc Trôi trên YouTube': Action('YouTube', 'song', 'Lạc Trôi'),
             'Mở nhạc Lạc Trôi trên YouTube': Action('YouTube', 'song', 'Lạc Trôi'),
             'Mở nhạc Nơi Này Có Anh trên YouTube cho tôi': Action('YouTube', 'song', 'Nơi Này Có Anh'),
@@ -124,11 +124,13 @@ class ActionTests(unittest.TestCase):
         engine.chat = engine.gemini_chat = MagicMock(); engine.speaker = MagicMock(); engine.app_actions = MagicMock()
         result = 'Mình đã mở cuộc trò chuyện với My Documents trên Zalo.'
         engine.app_actions.execute.return_value = ActionResult(result, True, .1)
-        engine._answer('Mở tin nhắn với My Documents trên Zalo', Utterance(np.zeros(480), time.monotonic()), 0)
+        with patch('pet.controller.phrase_action_result', side_effect=lambda cfg, q, evidence, cancelled: evidence):
+            engine._answer('Mở tin nhắn với My Documents trên Zalo', Utterance(np.zeros(480), time.monotonic()), 0)
         engine.app_actions.execute.assert_called_once()
         engine.chat.stream.assert_not_called()
         self.assertEqual(engine.last_app, 'Zalo')
-        self.assertEqual(engine.speaker.speak.call_args.args[0], result)
+        from pet.action_reply import style_action_result
+        self.assertEqual(engine.speaker.speak.call_args.args[0], style_action_result(result))
         self.assertEqual(engine.speaker.speak.call_count, 1)
 
     def test_busy_chat_does_not_block_direct_action(self):
@@ -160,7 +162,7 @@ class ActionTests(unittest.TestCase):
         engine = self.followup_engine('Spotify')
         engine.pending_song = Action('Spotify', 'song', 'Thiên Lý Ơi')
         engine._answer('Tạm dừng nhạc', Utterance(np.zeros(480), time.monotonic()), 0)
-        self.assertEqual(engine.app_actions.execute.call_args.args[0], Action('Spotify', 'pause'))
+        self.assertEqual(engine.app_actions.execute.call_args.args[0], Action('Spotify', 'pause', auto_media=True))
 
     def test_contact_followup_accepts_name_and_expires(self):
         engine = self.followup_engine('Zalo'); engine.awaiting_contact = True
@@ -184,7 +186,7 @@ class ActionTests(unittest.TestCase):
             ('Mở Thiên Lý Ơi', Action('YouTube', 'song', 'Thiên Lý Ơi')),
             ('Hãy mở Thiết Lý Ơi của Jack cho tôi', Action('YouTube', 'song', 'Thiết Lý Ơi', 'Jack')),
             ('Mở bài Lạc Trôi', Action('YouTube', 'song', 'Lạc Trôi')),
-            ('Tạm dừng nhạc', Action('YouTube', 'pause')),
+            ('Tạm dừng nhạc', Action('YouTube', 'pause', auto_media=True)),
         ]:
             with self.subTest(spoken=spoken):
                 engine.app_actions.reset_mock()

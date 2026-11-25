@@ -20,7 +20,7 @@ LIVE = Path(sys.argv.pop(1))
 package = types.ModuleType('pet')
 package.__path__ = [str(ROOT / 'pet'), str(LIVE / 'pet')]
 sys.modules['pet'] = package
-for name, value in [('controller', 'Controller'), ('mobile', 'MobileBridge')]:
+for name, value in [('controller', 'Controller')]:
     module = types.ModuleType('pet.' + name)
     setattr(module, value, object)
     sys.modules[module.__name__] = module

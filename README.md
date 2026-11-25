@@ -1,41 +1,34 @@
-# Alex Assistant
+# Alex Assistant & Tra bài
 
-Mã nguồn trợ lý Alex trên Windows và Android. Alex sử dụng Gemma chạy cục bộ để trò chuyện; phần tra cứu web được gửi tới dịch vụ tìm kiếm khi cần. Các thành phần Bionic cũ được giữ trong mã nguồn để tham khảo và tương thích.
+Bản mã nguồn riêng tư cập nhật ngày 25/11/2026, theo yêu cầu của chủ dự án. Theo lựa chọn cuối cùng, chỉ gồm Alex trên laptop và chức năng Tra bài; không gồm robot ESP32, kiểm soát máy trạm hay nhóm điện thoại.
 
-## Thành phần
+## Có trong repo
 
-- `desktop/`: giao diện pet, microphone/VAD/STT, giọng nói, router ứng dụng/tệp/web, thao tác cửa sổ, âm lượng/độ sáng, kết nối điện thoại.
-- `android/`: trò chuyện, ghép QR/TLS, mở khóa qua mạng hoặc Bluetooth và cảnh báo theo cấp.
-- `windows-unlock/`: mã nguồn dịch vụ mở khóa quyền LocalSystem, kiểm chứng giao diện Windows và gửi PIN một lần; có bộ gỡ cài đặt.
-- `windows-display-priority/`: ưu tiên tắt màn hình tạm thời khi Alex khóa máy và phục hồi khi mở khóa.
-- `mcp/`, `docs/`: công cụ cục bộ và tài liệu tích hợp.
-- `tools/`: kiểm thử và kiểm tra phục hồi.
+- Pet trên desktop và ứng dụng Alex: trò chuyện chữ/giọng nói, STT đa ngôn ngữ, Gemma cục bộ, TTS và nhớ tạm theo phiên.
+- Router và agent thao tác web, ứng dụng và tệp trên chính máy chạy Alex; thao tác cửa sổ, nhạc, âm lượng và độ sáng.
+- Trạm chỉ huy, avatar, Vũ trụ Alex, camera cử chỉ bật theo lựa chọn và hiệu ứng bóc tách hành tinh.
+- Tra cứu web và hỗ trợ đọc/giải bài từ ảnh; một số chức năng cần dịch vụ ngoài và khóa API của người cài. Không bảo đảm mọi đáp án đều đúng.
+- `mcp/`: mã công cụ cục bộ. `desktop/tests/`: kiểm thử.
 
-## Bản nguồn và bản đang chạy
+## Không đưa lên trong bản này
 
-Repo này dùng để phát triển/khôi phục. Pet đang chạy tại `../../outputs/Bionic-pet`; việc sửa repo không tự triển khai vào bản đang chạy.
-Các thay đổi đồng bộ có thể xem bằng `git diff`. Không đưa cấu hình, dữ liệu người dùng hoặc khóa vào commit.
+- Robot ESP32 và các dự án phần cứng.
 
-## Kiểm tra
+- PC Control, agent trên máy trạm thứ hai và dữ liệu kiểm soát máy tính.
+- Toàn bộ Android/APK, ghép QR/TLS/Bluetooth, kết nối điện thoại và dịch vụ mở khóa từ xa.
+- Khóa API, token, chứng chỉ riêng, khóa ký, cấu hình cá nhân, lịch sử chat, bản thu, ảnh màn hình thật, model GGUF và môi trường đã cài.
 
-Các bài thử desktop ở `desktop/tests`; các thao tác nguồn điện, mở ứng dụng và nhập phím được giả lập. Bộ thử Android thuần Java kiểm tra giữ để nói, thu âm, cảnh báo, xác nhận, hủy, hết hạn, TLS và nguyên tắc không gửi lại PIN. Xem `docs/AUDIT-20261105.md` để biết kết quả và giới hạn kiểm thử mới nhất.
+Đây là bản xuất độc lập; ứng dụng đang cài trên máy chủ dự án vẫn giữ đầy đủ các tính năng đã loại khỏi GitHub. Các import/nút giao diện liên quan đã được gỡ trong bản xuất để tránh phụ thuộc vào tệp không có trong repo.
 
-`tools/Test-UnlockClient.ps1 -JdkRoot <JDK>` chạy kiểm thử client không cần Android SDK hay điện thoại.
-`windows-unlock/run-windows-lab.ps1` biên dịch và chạy bộ thử C# mà không cài dịch vụ hay gửi phím thật.
+## Chạy trên Windows
 
-## Android
+1. Cài Python 3.11 và `uv`. Trong `desktop/`, sao chép `config.example.yaml` thành `config.yaml`.
+2. Điều chỉnh đường dẫn model và thiết bị âm thanh theo máy. Xem `desktop/GEMMA-LOCAL.md`; model và bộ chạy phải được cài riêng.
+3. Chạy `desktop/setup.bat`, sau đó `desktop/run.bat` hoặc `desktop/desktop_launch.py` trong môi trường phù hợp. Dùng `launch.py --app` để mở cửa sổ Alex.
+4. API ngoài là tùy chọn và cần khóa riêng của người dùng; không nhập khóa vào mã nguồn hay commit. Các tính năng quan sát/điều khiển màn hình chỉ dùng trên máy bạn được phép thao tác.
 
-Xem `android/README.md`. APK người dùng đã cài và khóa ký được lưu riêng ngoài repo. Bản biên dịch kiểm thử dùng khóa tạm không cài lên điện thoại và không thay thế khóa phát hành.
+## Kiểm thử và lịch sử
 
-## Thiết lập model cục bộ
+Xem `docs/GITHUB-EXPORT-20261125.md` về phạm vi và kết quả kiểm tra bản xuất. Lịch sử commit cũ của repo được giữ nguyên, nên có thể còn phiên bản Android từ các lần tải lên trước. Bản hiện tại không chứa các nhóm bị loại. Không viết lại lịch sử Git trong đợt này.
 
-Sao chép `desktop/config.example.yaml` thành `desktop/config.yaml`, chỉnh `llm.gemma_model_path` thành đường dẫn tuyệt đối tới tệp GGUF Gemma đã cài và điều chỉnh số lớp GPU theo phần cứng. Model, bộ chạy và cấu hình cá nhân không nằm trong Git; xem `desktop/GEMMA-LOCAL.md` để biết thêm chi tiết.
-
-## Hành vi và quyền riêng tư
-
-- Đóng tab chỉ đóng một tab; đóng cửa sổ/ứng dụng là lệnh riêng.
-- Tắt máy: theo cấu hình nguồn điện hiện tại. Chế độ chờ mở khóa từ xa khi cắm sạc khóa Windows/tắt màn hình và giữ tiến trình hoạt động; không phải Sleep thật qua nút nguồn Windows.
-- Tắt nguồn là Shutdown; lệnh nguồn không tự lặp sau khi mở khóa.
-- PIN chỉ tồn tại tạm thời cho một lần xác nhận trên điện thoại, không được lưu hoặc ghi log.
-- Đợt này không bổ sung đánh thức Sleep thật qua Internet và không gửi thử cảnh báo Zalo/SMS.
-- Không commit model, venv, profile Bionic, log, bản thu, khóa ký, chứng chỉ riêng, thông tin ghép nối hoặc cấu hình cá nhân.
+Tài nguyên bên thứ ba giữ giấy phép tương ứng; xem `THIRD_PARTY.md` và các tệp LICENSE trong từng thành phần. Repo chưa cấp giấy phép nguồn mở chung cho mã riêng của Alex.

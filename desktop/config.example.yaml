@@ -1,4 +1,3 @@
-# Copy to config.yaml and configure this machine before setup.
 name: Alex
 spoken_name: A lếch
 wake:
@@ -19,7 +18,6 @@ llm:
   provider: gemma
   base_url: http://127.0.0.1:18440
   model: alex-gemma
-  # Set an absolute path to the locally installed Gemma GGUF model.
   gemma_model_path: ''
   gemma_gpu_layers: 42
   gemma_gpu_fallback_layers: 32
@@ -78,6 +76,7 @@ power:
   - tắt nguồn
   - tắt nguồn máy tính
   - shutdown máy
+  remote_wait_on_ac: false
 pet:
   shape: robot-heads
   size: 110
@@ -90,11 +89,6 @@ pet:
 privacy:
   save_audio: false
   save_transcripts: false
-mobile:
-  enabled: true
-  port: 8768
-  bind_host: auto
-  allowed_client_ip: null
 bionic:
   bridge_port: 9223
   timeout_seconds: 900

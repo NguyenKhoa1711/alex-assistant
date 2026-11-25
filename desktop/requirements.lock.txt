@@ -59,3 +59,9 @@ uiautomation==2.0.29
 uvicorn==0.54.0
 webrtcvad-wheels==2.0.14.post1
 websocket-client==1.9.2
+
+winrt-runtime==3.2.1 ; sys_platform == "win32"
+winrt-Windows.Foundation==3.2.1 ; sys_platform == "win32"
+winrt-Windows.Foundation.Collections==3.2.1 ; sys_platform == "win32"
+winrt-Windows.Media==3.2.1 ; sys_platform == "win32"
+winrt-Windows.Media.Control==3.2.1 ; sys_platform == "win32"

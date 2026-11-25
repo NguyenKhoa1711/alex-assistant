@@ -104,6 +104,7 @@ class DesktopGuard:
         self.needs_verification = False
         self.failed = False
         self.bound_processes: set[tuple[int, str]] = set()
+        self.agent_observations: dict[tuple[int, int], tuple[Window, str]] = {}
 
     def plan(self, goal: str, steps: list[str], apps: list[str], paths: list[str]) -> dict:
         self.finish()
@@ -135,6 +136,23 @@ class DesktopGuard:
             self.approve('finish', self.grant)
         self.grant = ''; self.snapshot = ''; self.snapshot_window = None
         self.bound_processes.clear(); self.last_observation = ''
+        self.agent_observations.clear()
+
+    def register_agent_observation(self, window: Window, identity: str, point: tuple[int, int]) -> None:
+        """Bind a deep agent-desktop InputObservation identity to a verified Window and point."""
+        if not identity or not isinstance(point, tuple) or len(point) != 2:
+            raise ValueError('Quan sát agent-desktop không hợp lệ.')
+        self.agent_observations[point] = (window, identity)
+
+    def verify_agent_observation(self, window: Window, point: tuple[int, int],
+                                 fresh_snapshot: dict, *, include_standard_roles: bool = False):
+        """Re-verify a registered agent-desktop control against a fresh snapshot."""
+        from .agent_input_observation import InputObservation, rematch
+        bound = self.agent_observations.get(point)
+        if not bound or bound[0] != window or self.foreground() != window:
+            return None
+        probe = InputObservation(bound[1], point, '@s0:e0')
+        return rematch(probe, fresh_snapshot, include_standard_roles=include_standard_roles)
 
     def _check(self) -> None:
         if not self.grant or not self.approve('check', self.grant).get('allowed'):
@@ -218,7 +236,7 @@ class DesktopGuard:
             message = reason + '\n\nCửa sổ hiện tại: ' + current.title
             if not self.approve('approve_action', self.grant, message).get('allowed'):
                 self.finish()
-                raise ValueError('Bạn chưa cho phép hoặc đã hủy. Dừng thao tác; không thử đường khác.')
+                raise ValueError('Thao tác chưa khớp đủ chi tiết với yêu cầu hiện tại hoặc đã bị hủy. Đã dừng, không thử đường khác.')
             if name in ('Click', 'Type', 'Scroll', 'Shortcut', 'Move'):
                 self.restore(current.hwnd)
                 if self.foreground() != current:
@@ -228,12 +246,24 @@ class DesktopGuard:
         return args, current
 
     def _target_line(self, location, snapshot: str | None = None) -> str:
-        if not isinstance(location, list) or len(location) != 2 or not all(isinstance(n, int) for n in location):
+        if not isinstance(location, list) or len(location) != 2 or not all(type(n) is int for n in location):
             return ''
         text = self.snapshot if snapshot is None else snapshot
-        point = f'({location[0]},{location[1]})'
-        return next((line for line in text.splitlines() if point in line and re.search(
-            r'^[ │]*[├└]── \([-\d]+,[-\d]+\) [\w /-]+ ".*"\s+\[action:', line)), '')
+        hits = []
+        for line in text.splitlines():
+            match = re.match(
+                r'^[ │]*[├└]──\s+\((-?\d+),(-?\d+)\)\s+[\w /-]+\s+"[^"\r\n]*"\s+'
+                r'(?:\[[^\]\r\n]+\]\s+)*\[action:', line)
+            if match and [int(match[1]),int(match[2])] == location and line not in hits:
+                hits.append(line)
+        # Do not confuse a point mentioned inside a label with its location,
+        # or choose between different controls sharing the same point.
+        if len(hits)==1: return hits[0]
+        # UIA can expose a control and its decorative Text child at the same
+        # center. Never choose between two inputs/buttons or hide a sensitive
+        # button behind the text decorating it.
+        semantic=[line for line in hits if not re.search(r'\)\s+(?:text|static text|statictext)\s+"',line,re.I)]
+        return semantic[0] if len(semantic)==1 else ''
 
     def validate_live_target(self, name: str, args: dict, text: str, window: Window) -> None:
         if window != self.snapshot_window or self.foreground() != window:

@@ -17,6 +17,7 @@ class Action:
     operation: str
     query: str = ''
     artist: str = ''
+    auto_media: bool = False
 
 
 @dataclass(frozen=True)
@@ -54,9 +55,20 @@ def parse_action(question: str, last_app: str = '') -> Action | None:
         if char == ' ':
             chars.append(' '); positions.append(index)
     text = ''.join(chars)
-    if re.search(r'\bđừng\b', raw.casefold()) or re.search(
+    # "Mở bài <tên bài> trên YouTube/Spotify" is a complete song command. Words inside the
+    # title (đừng, không, rồi, và...) are data, so they must not trip the negation or
+    # compound guards below, otherwise the request falls through and nothing is executed.
+    _lead_prefix = (r'(?:(?:vang|da|u|uh|a|o|oi|nay|e|oke|ok|duoc roi)[,\s]+)*'
+                    r'(?:(?:alex oi|alex|a lech oi|a lech|ban oi|ban)[,\s]+)*(?:(?:hay|lam on|vui long)[,\s]+)*')
+    song_on_platform = re.fullmatch(
+        _lead_prefix + r'(?:mo|bat|phat|nghe|tim(?: kiem)?|kiem) (?:(?:cho|giup) (?:toi|minh) )?'
+        r'(?:bai(?: hat| nhac)?|ca khuc|ban nhac|nhac|video(?: nhac)?|mv|clip)?\s*.+? '
+        r'(?:tren|trong|bang|o) (?:trang |ung dung |web )?'
+        r'(?:spotify|suppotify|soptily|spot ti phai|so pot ti phai|youtube|you tube|du tup|iu tup|diu tup)'
+        r'(?: (?:giup|cho) (?:toi|minh))?(?: (?:di|nhe|nha|voi|len|luon|ngay))?', text)
+    if not song_on_platform and (re.search(r'\bđừng\b', raw.casefold()) or re.search(
             r'\b(?:dung|khong|khoan) (?:mo|bat|tim|kiem|gui|tat|tam dung)\b|'
-            r'\b(?:khong|khoan) (?:phat|dung|ngung)\b', text):
+            r'\b(?:khong|khoan) (?:phat|dung|ngung)\b', text)):
         return None
     autoplay_clause = (
         r' (?:va|roi) (?:tu(?: dong)? )?(?:phat|mo|bat)'
@@ -67,7 +79,16 @@ def parse_action(question: str, last_app: str = '') -> Action | None:
     # This one bounded chain only opens Zalo and searches a contact. Other
     # compound actions (especially send/delete/call) remain outside this router.
     guarded = re.sub(r'\b((?:mo|vao|len) (?:ung dung )?(?:zalo|ra lo|gia lo|za lo)) (?:roi|va) (?=tim(?: kiem)?\b)', r'\1 ', guarded)
-    if re.search(r'\b(?:roi|sau do|va gui|va xoa)\b', guarded):
+    if not song_on_platform and re.search(r'\b(?:roi|sau do|va gui|va xoa)\b', guarded):
+        return None
+    # "Mở bài A trên YouTube và mở Messenger" is two commands. Do not swallow the second
+    # one into the song title; return None so the compound router splits and runs both.
+    if not song_on_platform and not re.match(
+            _lead_prefix + r'(?:mo|vao|len) (?:ung dung |trang |web )?'
+            r'(?:spotify|suppotify|soptily|spot ti phai|so pot ti phai|youtube|you tube|du tup|iu tup|diu tup) '
+            r'(?:roi |va )?(?:mo|phat|bat|nghe|tim|kiem)\b', text) and re.search(
+            r'\b(?:tren|trong|bang|o) (?:trang |ung dung |web )?(?:spotify|youtube|you tube|du tup|iu tup|diu tup)'
+            r' (?:va|roi|sau do)\s+(?:mo|vao|dong|tat|nhan|goi|chuyen|tim|bat)\b', guarded):
         return None
     prefix = r'(?:(?:vang|da|u|uh|a|o|oi|nay|e|oke|ok|duoc roi)[,\s]+)*(?:(?:alex oi|alex|a lech oi|a lech|ban oi|ban)[,\s]+)*(?:(?:hay|lam on|vui long)[,\s]+)*'
     help_me = r'(?:(?:cho|giup) (?:toi|minh) )?'
@@ -118,9 +139,9 @@ def parse_action(question: str, last_app: str = '') -> Action | None:
     if last_app in ('Spotify', 'YouTube', 'Trình duyệt'):
         target_media_app = 'Spotify' if last_app == 'Spotify' else 'YouTube'
         if match(r'(?:dung lai|tam dung|ngung lai|tat di|dung phat(?: video| nhac)?|tam dung (?:video|nhac)|dung (?:video|nhac))'):
-            return Action(target_media_app, 'pause')
+            return Action(target_media_app, 'pause', auto_media=True)
         if match(r'(?:tiep tuc|phat tiep(?: video| nhac)?|bat lai|mo tiep|nghe tiep|tiep tuc phat(?: video| nhac)?)'):
-            return Action(target_media_app, 'play')
+            return Action(target_media_app, 'play', auto_media=True)
         if last_app in ('Spotify', 'YouTube') and match(r'(?:bai khac|bai nua|bai ke tiep|sang bai khac)'):
             return Action(last_app, 'next')
     play_cmd = match(
@@ -128,14 +149,14 @@ def parse_action(question: str, last_app: str = '') -> Action | None:
         + help_me + r'(?P<noun>nhac|bai hat|bai nhac|video(?: nhac)?|mv|clip)(?: (?:tiep|lai|dang dung|dang tam dung))?' + platform
     )
     if play_cmd:
-        return Action(app_of(play_cmd), 'play')
+        return Action(app_of(play_cmd), 'play', auto_media=not bool(play_cmd.group('platform')) and play_cmd.group('noun') in ('nhac', 'bai hat', 'bai nhac'))
     pause_cmd = match(
         r'(?:tam dung|dung|ngung|tat) ' + help_me +
         r'(?:phat )?(?P<noun>nhac|bai hat|bai nhac|bai|video(?: nhac)?|mv|clip)' +
         playing_now + r'(?: (?:lai|di))?' + platform
     )
     if pause_cmd:
-        return Action(app_of(pause_cmd), 'pause')
+        return Action(app_of(pause_cmd), 'pause', auto_media=not bool(pause_cmd.group('platform')) and pause_cmd.group('noun') in ('nhac', 'bai hat', 'bai nhac', 'bai'))
     pause_app = match(
         r'(?:tam dung|dung|ngung) ' + help_me +
         r'(?:video |phat |nhac )?(?P<platform>' + platform_names + r')' + playing_now

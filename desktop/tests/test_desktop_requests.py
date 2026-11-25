@@ -32,7 +32,7 @@ class Engine(DesktopRequestsMixin):
 class DesktopRequestsTests(unittest.TestCase):
     def setUp(self):
         self.engine = Engine()
-        self.unlocked = patch('pet.mobile._pc_unlocked', return_value=True)
+        self.unlocked = patch('pet.session_state._pc_unlocked', return_value=True)
         self.unlocked.start()
         self.addCleanup(self.unlocked.stop)
 
@@ -81,7 +81,7 @@ class DesktopRequestsTests(unittest.TestCase):
         self.engine._answer.assert_not_called()
 
     def test_locked_pc_never_performs_action(self):
-        with patch('pet.mobile._pc_unlocked', return_value=False):
+        with patch('pet.session_state._pc_unlocked', return_value=False):
             self.engine.submit_text('Mở Notepad')
             self.engine._run_desktop_request()
         self.engine._answer.assert_not_called()
@@ -92,10 +92,10 @@ class DesktopRequestsTests(unittest.TestCase):
         self.assertFalse(self.engine._run_desktop_request())
         self.engine._answer.assert_not_called()
 
-    def test_reset_clears_model_memory_on_worker(self):
+    def test_new_chat_preserves_memory_on_worker(self):
         self.engine.submit_text('', reset=True)
         self.engine._run_desktop_request()
-        self.assertEqual(self.engine.chat.history, [])
+        self.assertEqual(self.engine.chat.history, [('old question', 'answer')])
         self.engine._answer.assert_not_called()
         self.engine.opening_contexts['desktop'].clear.assert_called_once()
 

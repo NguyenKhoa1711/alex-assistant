@@ -17,7 +17,7 @@ class VoiceDiagnosticsTests(unittest.TestCase):
     def recognizer(self, text: str, **extra):
         model = MagicMock()
         model.transcribe.return_value = (iter([MagicMock(text=text, no_speech_prob=.01, avg_logprob=-.2)]), None)
-        config = dict(load_config()['stt'], **extra)
+        config = dict(load_config()['stt'], language_mode='vi', **extra)
         with patch.object(SpeechToText, '_load', return_value=model):
             stt = SpeechToText(config, lambda _: None)
         return stt, model

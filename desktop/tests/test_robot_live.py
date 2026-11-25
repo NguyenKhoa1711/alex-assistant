@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parent.parent
 LIVE = Path(sys.argv[1])
 package = types.ModuleType('pet'); package.__path__ = [str(ROOT/'pet'),str(LIVE/'pet')]
 sys.modules['pet'] = package
-for name, value in [('controller','Controller'),('mobile','MobileBridge')]:
+for name, value in [('controller','Controller')]:
     stub = types.ModuleType('pet.'+name); setattr(stub,value,object); sys.modules[stub.__name__]=stub
 from pet import window as module
 from pet.robot_live import local_document_allowed

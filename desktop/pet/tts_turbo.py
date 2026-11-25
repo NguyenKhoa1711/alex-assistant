@@ -17,6 +17,8 @@ import numpy as np
 import sounddevice as sd
 
 from .config import ROOT
+from . import voice_motion
+from .speech_pcm import SpeechEdges, trim_speech_edges
 
 
 class TurboSpeaker:
@@ -130,6 +132,7 @@ class TurboSpeaker:
             pcm = base64.b64decode(response['audio'], validate=True)
             if sample_rate != 48000 or len(pcm) % 2 or len(pcm) > 12_000_000:
                 raise RuntimeError('Dữ liệu âm thanh VieNeu không hợp lệ.')
+            pcm=trim_speech_edges(pcm,sample_rate)
             self._put_cached(text, sample_rate, pcm)
             return sample_rate, pcm
 
@@ -145,118 +148,168 @@ class TurboSpeaker:
 
     def speak(self, text: str, cancelled: threading.Event,
               on_play: Callable[[float], None]) -> float | None:
+        return self.speak_sequence((text,), cancelled, on_play)
+
+    # Pre-buffer before audio starts and after a dry queue. VieNeu on this CPU runs
+    # at roughly real time (RTF 0.72-0.95), so streaming playback without a lead
+    # underruns mid-sentence ("giật"), and synthesising the next sentence
+    # only after the previous one finished playing leaves a long gap ("khựng").
+    _PREBUFFER_SECONDS = 1.0
+    _REBUFFER_SECONDS = 0.25
+
+    def speak_sequence(self, texts, cancelled: threading.Event,
+                       on_play: Callable[[float], None]) -> float | None:
+        """Speak one or more sentences smoothly through a single continuous audio stream.
+
+        All sentences stream while the preceding audio plays. Only excess quiet
+        at utterance edges is shortened; internal pauses remain untouched.
+        """
         started = time.monotonic()
-        if cancelled.is_set():
-            return None
-        cached = self._get_cached(text)
-        if cached is not None:
-            sample_rate, raw = cached
-            pcm = np.frombuffer(raw, dtype=np.int16)
-            with sd.OutputStream(samplerate=sample_rate, channels=1, dtype='int16',
-                                 device=self.device, blocksize=2048) as stream:
+        chunks: Queue = Queue()
+        sentence_end = object()
+
+        def producer() -> None:
+            try:
+                for idx, text in enumerate(texts):
+                    if cancelled.is_set():
+                        break
+                    cached = self._get_cached(text)
+                    if cached is not None:
+                        chunks.put(cached[1])
+                        chunks.put(sentence_end)
+                        continue
+                    collected: list[bytes] = []
+                    completed = False
+                    trim=SpeechEdges()
+                    def emit(raw):
+                        audio=trim.feed(raw)
+                        if audio:
+                            collected.append(audio)
+                            chunks.put(audio)
+                    use_stream = True
+                    with self.render_lock:
+                        with self.write_lock:
+                            self.sequence += 1
+                            request_id = self.sequence
+                            if self.proc.poll() is not None or self.proc.stdin is None:
+                                raise RuntimeError('Giọng VieNeu chưa sẵn sàng.')
+                            message = {
+                                'id': request_id,
+                                'text': text,
+                                'voice': self.voice,
+                                'stream': use_stream,
+                            }
+                            self.proc.stdin.write((json.dumps(message, ensure_ascii=False) + '\n').encode('utf-8'))
+                            self.proc.stdin.flush()
+                        while not cancelled.is_set():
+                            response = self._await(request_id, cancelled, 90)
+                            if response is None:
+                                break
+                            if response.get('error'):
+                                raise RuntimeError(str(response['error']))
+                            if 'audio' in response:
+                                raw = base64.b64decode(response['audio'], validate=True)
+                                emit(raw)
+                                completed = True
+                                break
+                            if 'chunk' in response:
+                                raw = base64.b64decode(response['chunk'], validate=True)
+                                if raw:
+                                    emit(raw)
+                            if response.get('done'):
+                                completed = True
+                                break
+                    if completed and not cancelled.is_set():
+                        tail=trim.finish()
+                        if tail:
+                            collected.append(tail)
+                            chunks.put(tail)
+                    if completed and collected and not cancelled.is_set():
+                        self._put_cached(text, 48000, b''.join(collected))
+                    chunks.put(sentence_end)
+            except Exception as exc:  # surfaced to the caller below
+                chunks.put(exc)
+            finally:
+                chunks.put(None)
+
+        threading.Thread(target=producer, daemon=True, name='VieNeu-sequence').start()
+
+        stream: sd.OutputStream | None = None
+        first: float | None = None
+        pending: list[np.ndarray] = []
+        pending_samples = 0
+        need = int(48000 * self._PREBUFFER_SECONDS)
+        playing = False
+        error: Exception | None = None
+
+        def flush() -> None:
+            nonlocal stream, first, pending_samples, playing
+            if not pending or cancelled.is_set():
+                return
+            if stream is None:
+                stream = sd.OutputStream(samplerate=48000, channels=1, dtype='int16',
+                                         device=self.device, blocksize=2048, latency='high')
+                stream.start()
+            if first is None:
                 first = time.monotonic() - started
                 on_play(first)
-                for offset in range(0, len(pcm), 2048):
+            playing = True
+            data = np.concatenate(pending) if len(pending) > 1 else pending[0]
+            pending.clear()
+            pending_samples = 0
+            for offset in range(0, len(data), 2048):
+                if cancelled.is_set():
+                    return
+                block = data[offset:offset + 2048]
+                voice_motion.feed_pcm(block)
+                stream.write(block)
+
+        try:
+            while not cancelled.is_set():
+                try:
+                    item = chunks.get(timeout=0.05)
+                except Empty:
+                    if playing and not pending:
+                        # Device is about to run dry: rebuild a short lead rather
+                        # than letting it stutter on every late chunk.
+                        playing = False
+                        need = int(48000 * self._REBUFFER_SECONDS)
+                    continue
+                if item is None:
+                    break
+                if isinstance(item, Exception):
+                    error = item
+                    continue
+                if item is sentence_end:
+                    # A short sentence may never reach the lead size; play what we have.
+                    flush()
+                    continue
+                pcm = np.frombuffer(item, dtype=np.int16)
+                if not len(pcm):
+                    continue
+                pending.append(pcm)
+                pending_samples += len(pcm)
+                if playing or pending_samples >= need:
+                    flush()
+            if not cancelled.is_set():
+                flush()
+        finally:
+            if stream is not None:
+                try:
                     if cancelled.is_set():
                         stream.abort()
-                        break
-                    stream.write(pcm[offset:offset + 2048])
-            return first
-
-        with self.render_lock:
-            if cancelled.is_set():
-                return None
-            cached = self._get_cached(text)
-            if cached is not None:
-                sample_rate, raw = cached
-                pcm = np.frombuffer(raw, dtype=np.int16)
-                with sd.OutputStream(samplerate=sample_rate, channels=1, dtype='int16',
-                                     device=self.device, blocksize=2048) as stream:
-                    first = time.monotonic() - started
-                    on_play(first)
-                    for offset in range(0, len(pcm), 2048):
-                        if cancelled.is_set():
-                            stream.abort()
-                            break
-                        stream.write(pcm[offset:offset + 2048])
-                return first
-            with self.write_lock:
-                self.sequence += 1
-                request_id = self.sequence
-                if self.proc.poll() is not None or self.proc.stdin is None:
-                    raise RuntimeError('Giọng VieNeu chưa sẵn sàng.')
-                message = {'id': request_id, 'text': text, 'voice': self.voice, 'stream': True}
-                self.proc.stdin.write((json.dumps(message, ensure_ascii=False) + '\n').encode('utf-8'))
-                self.proc.stdin.flush()
-
-            first: float | None = None
-            collected: list[bytes] = []
-            sample_rate = 48000
-            completed = False
-            stream_ctx: sd.OutputStream | None = None
-            try:
-                while not cancelled.is_set():
-                    response = self._await(request_id, cancelled, 90)
-                    if response is None:
-                        break
-                    if response.get('error'):
-                        raise RuntimeError(str(response['error']))
-                    sample_rate = int(response.get('sample_rate', 48000))
-                    if 'audio' in response:
-                        raw_pcm = base64.b64decode(response['audio'], validate=True)
-                        collected.append(raw_pcm)
-                        completed = True
-                        if stream_ctx is None:
-                            stream_ctx = sd.OutputStream(samplerate=sample_rate, channels=1, dtype='int16',
-                                                         device=self.device, blocksize=2048)
-                            stream_ctx.start()
-                            first = time.monotonic() - started
-                            on_play(first)
-                        pcm = np.frombuffer(raw_pcm, dtype=np.int16)
-                        for offset in range(0, len(pcm), 2048):
-                            if cancelled.is_set():
-                                stream_ctx.abort()
-                                break
-                            stream_ctx.write(pcm[offset:offset + 2048])
-                        break
-                    if 'chunk' in response:
-                        chunk_bytes = base64.b64decode(response['chunk'], validate=True)
-                        if not chunk_bytes:
-                            continue
-                        collected.append(chunk_bytes)
-                        if stream_ctx is None:
-                            stream_ctx = sd.OutputStream(samplerate=sample_rate, channels=1, dtype='int16',
-                                                         device=self.device, blocksize=2048)
-                            stream_ctx.start()
-                            first = time.monotonic() - started
-                            on_play(first)
-                        pcm = np.frombuffer(chunk_bytes, dtype=np.int16)
-                        for offset in range(0, len(pcm), 2048):
-                            if cancelled.is_set():
-                                stream_ctx.abort()
-                                break
-                            stream_ctx.write(pcm[offset:offset + 2048])
-                    if response.get('done'):
-                        completed = True
-                        break
-            finally:
-                if stream_ctx is not None:
-                    try:
-                        if cancelled.is_set():
-                            stream_ctx.abort()
-                        else:
-                            stream_ctx.stop()
-                    except Exception:
-                        pass
-                    try:
-                        stream_ctx.close()
-                    except Exception:
-                        pass
-            if completed and collected and not cancelled.is_set():
-                full_pcm = b''.join(collected)
-                if sample_rate == 48000 and len(full_pcm) % 2 == 0 and len(full_pcm) <= 12_000_000:
-                    self._put_cached(text, sample_rate, full_pcm)
-            return first
+                    else:
+                        stream.stop()
+                except Exception:
+                    pass
+                try:
+                    stream.close()
+                except Exception:
+                    pass
+            voice_motion.clear()
+        if error is not None and not cancelled.is_set():
+            raise error
+        return first
 
     def close(self) -> None:
         if self.proc.poll() is not None:
